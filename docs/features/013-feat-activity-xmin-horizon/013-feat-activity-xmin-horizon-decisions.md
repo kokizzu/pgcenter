@@ -204,3 +204,35 @@ shows `docs/tech-debt.md` and `.claude/skills/project-knowledge/architecture.md`
 departure from it.
 
 **Reviews:** pending — see task file for reviewer report paths.
+
+---
+
+## Merge note — feature 012 landed inside this feature's squash commit
+
+**Date:** 2026-07-26
+**Commit:** `9baa70d feat(activity): xmin horizon and parallel worker grouping (#149)`
+
+The local `develop` was ahead of `origin/develop` when this feature's branch was cut, and nobody
+noticed until after the merge. Feature 012 (PostgreSQL 19 compatibility) had been finished and
+committed locally but never pushed, and so had the 0.12.0 roadmap. The branch was created on top of
+that state, so PR #149 carried 42 commits rather than the three this feature produced, and the
+squash merged them all under a title naming only this feature.
+
+Verified: `PostgresV19` did not exist on `origin/develop` at `5f6f0a1` before this merge. Everything
+feature 012 produced — the version constant, PG 19 in the test image, the progress-screen columns,
+its whole spec cycle — entered the repository inside `9baa70d`.
+
+**Nothing was lost and the tree is correct.** What is wrong is the history: anyone looking for when
+PG 19 support arrived will find a commit about the xmin horizon, and release notes generated from
+commit history will not mention feature 012 at all.
+
+**Decision: leave it.** Rewriting an already-pushed shared branch to correct commit attribution is a
+poor trade — the risk lands on everyone who may have fetched, while the defect is cosmetic. The one
+real consequence, the missing mention in the 0.12.0 release notes, is fixable at release time, which
+has not arrived yet.
+
+**Action for whoever prepares the 0.12.0 release:** state explicitly that PostgreSQL 19 support
+shipped in `9baa70d` together with this feature; the history will not say so on its own.
+
+**Process lesson:** check that the local base branch is not ahead of its remote before cutting a
+feature branch. This cost nothing here only because both features were finished and green.
