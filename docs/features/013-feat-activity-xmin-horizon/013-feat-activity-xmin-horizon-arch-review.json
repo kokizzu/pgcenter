@@ -1,0 +1,40 @@
+{
+  "status": "needs_revision",
+  "checks": {
+    "architectural_fit": "pass",
+    "scalability": "pass",
+    "database": "n/a",
+    "coupling": "pass",
+    "api_contracts": "n/a",
+    "backward_compat": "fail"
+  },
+  "findings": [
+    {
+      "check": "backward_compat",
+      "severity": "major",
+      "issue": "Round-1 major finding по строковому режиму закрыт лишь наполовину. Decision 4 теперь честно разбирает application_name как случай легитимно пустой строки и прямо признаёт: «no golden covers a string-column sort on activity» — но дальше утверждает, что экранный эффект «is checked by hand in Task 6». Это не подтверждается: ни описание Task 6, ни раздел Testing Strategy / Agent Verification Plan, ни Acceptance Criteria не содержат пункта «отсортировать activity по appname и убедиться, что пустые application_name уходят вниз». Task 6 явно перечисляет только то, что добавляет сверх чек-листа user-spec — replslots default sort и widened-screen-at-scale — appname там нет; сам user-spec (раздел «Как проверить», пункт 8) тоже проверяет только сортировку по horizon_xacts (числовой случай). Итог: изменение поведения сортировки строкового столбца на самом используемом экране pgcenter (activity) остаётся без какой-либо проверки — ни автоматической, ни ручной, — при этом спека создаёт впечатление, что ручная проверка покрывает этот случай.",
+      "location": "Decision 4 «The string case deserves its own examination» / «Coverage gap, stated»; Task 6 Description; Acceptance Criteria",
+      "fix": "Добавить в Task 6 явный пункт ручной проверки: отсортировать activity по appname по возрастанию и по убыванию и убедиться, что backend'ы с пустым application_name уходят в конец при обоих направлениях (это уже осознанно принятое product-решение, его нужно просто зафиксировать как проверяемый шаг). При желании — добавить соответствующий AC-пункт, зеркальный уже существующему пункту про NULL vs '' (Decision 5), но именно про строковый сорт на реальном экране."
+    },
+    {
+      "check": "architectural_fit",
+      "severity": "minor",
+      "issue": "Decision 3 обосновывает переименование ссылкой на «project's convention across wal.go, bgwriter.go, io.go and the progress selectors: Default = newest branch». Проверка кода показывает, что это не так единообразно: bgwriter.go и io.go вообще не используют идентификатор Default (PgStatBgwriterPG14/PG17/PG18, PgStatIOPG16/PG18 — везде явный номер версии, ветвление через if/else без switch/default) — приводить их как пример конвенции некорректно. Хуже того, progress_vacuum.go / progress_analyze.go / progress_basebackup.go (добавлены как раз фичей [012], на которую сама Decision 1 этой спеки явно ссылается как на прецедент) делают ОБРАТНОЕ тому, что предлагает Decision 3: при добавлении более новой ветки (PG19) существовавшее имя Default осталось на СТАРОЙ, более широкой ветке, а новая старшая ветка получила отдельное имя PgStat*PG19 — то есть Default НЕ был переименован/сдвинут на новую ветку. Само решение (оставить Default на новом activity-запросе, назвать старый PgStatActivityPG10) при этом остаётся разумным — но не по причине «общей конвенции», а потому что activity.go, в отличие от wal/bgwriter/io/progress-файлов, единственный использует настоящую конструкцию switch{...default:}, и там Default буквально обязан называть default-ветку. Заявленный широкий прецедент вводит в заблуждение и прямо противоречит самому недавнему и самому релевантному примеру (фича 012), процитированному в этой же спеке.",
+      "location": "Decision 3 «Constant naming» — абзац Rationale",
+      "fix": "Сузить обоснование до структурного аргумента активности (switch/case/default в activity.go, где Default сегодня буквально называет default-ветку) и убрать/поправить ссылку на bgwriter.go и io.go как на примеры конвенции. Если prog­ress-селекторы упоминаются, явно отметить, что там (после [012]) Default обозначает более старую, а не более новую ветку — иначе решение выглядит опирающимся на прецедент, который на деле говорит обратное."
+    },
+    {
+      "check": "architectural_fit",
+      "severity": "minor",
+      "issue": "Внутреннее противоречие между разделами. «What we're building/modifying → Not modified» перечисляет `internal/view/view.go` («the Configure wiring already exists and the seed must stay at 14 — see Decision 3»), но Task 1 «Files to modify» прямо включает `internal/view/view.go`, и это корректно: сид в view.New() (view.go:42) ссылается на константу `query.PgStatActivityDefault`, которая после переименования (Decision 3) должна стать `query.PgStatActivityPG10` — иначе код не скомпилируется. Сама Decision 3 это признаёт («The rename is mechanical: every non-test use is a placeholder that Configure overwrites immediately»), то есть view.go входит в периметр правки. Похоже, это осталось от черновика до того, как в спеку добавили переименование констант в Decision 3, и текст верхнего уровня не обновили.",
+      "location": "Architecture → «What we're building/modifying» (строка «Not modified: internal/view/view.go...») vs Implementation Tasks → Task 1 «Files to modify»",
+      "fix": "Убрать `internal/view/view.go` из списка «Not modified» или переформулировать: «behaviour of Configure unchanged; the seed line gets a one-line mechanical rename per Decision 3»."
+    }
+  ],
+  "risk_assessment": {
+    "performance": "low",
+    "complexity": "low",
+    "tech_debt": "low"
+  },
+  "summary": "Раунд 2 закрывает оба минорных замечания раунда 1 (TestViews_Configure добавлен в Task 1/Testing Strategy; рассуждение про Valid в Decision 5 проверено построчно и оказалось точным — postgres.go:634-635/651-653 копируют Valid faithfully вне DiffIntvl и для ненайденных строк, :643 ставит Valid=true безусловно только для найденных внутри диапазона). Major-находка про строковый режим сортировки продвинута лишь частично: анализ добавлен и честен, но заявленная ручная проверка в Task 6 фактически отсутствует в тексте задачи — риск остаётся непокрытым, только теперь явно, а не скрыто. Новый разворот по guard'у в Decision 6 обоснован и согласован с реальной историей проекта (issue #99 закрывался тем же паттерном в top/stat.go и переиспользовался в фичах 009/012), а три сбрасываемых состояния (Aligned, счётчик заголовка, orderConfigured) подтверждены построчным чтением report.go — все три независимо ломаются сегодня. Переименование констант в Decision 3 корректно по периметру файлов (все 6 мест использования учтены в Task 1), но обоснование через «общую конвенцию проекта» неточно и местами прямо расходится с прецедентом [012], на который спека же ссылается."
+}

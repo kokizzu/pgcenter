@@ -181,6 +181,7 @@ Details: https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-
 
   column	origin			description
 - pid		pid			Process ID of this backend
+- leader	leader_pid,pid		Process ID of the parallel query group leader, or own PID if there is no leader
 - cl_addr	client_addr		IP address of the client connected to this backend
 - cl_port	client_port		TCP port number that the client is using for communication with this backend
 - datname	datname			Name of the database this backend is connected to
@@ -190,10 +191,32 @@ Details: https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-
 - wait_etype	wait_event_type		The type of event for which the backend is waiting, if any
 - wait_event	wait_event		Wait event name if backend is currently waiting
 - state		state			Current overall state of this backend
+- backend_xid	backend_xid		Transaction ID of this backend, empty until the transaction has written anything
+- horizon_xacts	backend_xmin		Number of transactions this backend holds the xmin horizon back by
 - xact_age	xact_start		Current transaction's duration if active
 - query_age	query_start		Current query's duration if active
 - change_age	state_change		Age since last state has been changed
 - query		query			Text of this backend's most recent query
+
+Note: leader, backend_xid and horizon_xacts are available since PG13.
+
+Caveats:
+* leader is derived, not the raw leader_pid: it is the leader's PID when the
+  backend belongs to a parallel query group and the backend's own PID otherwise.
+  Raw leader_pid is empty for the leader itself, so an empty leader would not
+  have meant "this is not a parallel backend".
+* The xmin horizon is shown for backends only: prepared transactions,
+  replication slots and standby feedback hold it back too and do not appear in
+  pg_stat_activity at all, so an empty horizon_xacts does not mean that nobody
+  holds the horizon.
+* horizon_xacts here is age(backend_xmin) and is not the horizon_xacts of the
+  replication report, which subtracts backend_xmin from
+  pg_last_committed_xact(). One name, two screens, numbers that are not
+  directly comparable.
+* An empty backend_xid or horizon_xacts is not a proof that the session holds
+  nothing: pg_stat_activity hides the state of other users' sessions from an
+  unprivileged role by returning NULL rather than an error, so the value may
+  exist and just not be visible here.
 
 Details: https://www.postgresql.org/docs/current/monitoring-stats.html#PG-STAT-ACTIVITY-VIEW
 `
@@ -206,6 +229,8 @@ Details: https://www.postgresql.org/docs/current/monitoring-stats.html#PG-STAT-A
 - xact_age		xact_start		Current transaction's duration if active
 - datname		datname			Name of the database this worker is connected to
 - relation		relid			Name of the relation which is vacuumed by this worker
+- started_by		started_by		Who started the vacuum: manual, autovacuum or autovacuum_wraparound
+- mode			mode			Vacuum mode: normal, aggressive or failsafe
 - state			state			Current overall state of this worker
 - waiting		wait_event_type,wait_event	Wait event name and type for which the worker is waiting, if any
 - phase			phase			Current processing phase of vacuum
@@ -215,6 +240,8 @@ Details: https://www.postgresql.org/docs/current/monitoring-stats.html#PG-STAT-A
 - scanned,KiB		heap_blks_scanned	Amount of data scanned, in KiB
 - vacuumed,KiB		heap_blks_vacuumed	Amount of data vacuumed, in KiB
 - query			query			Text of this workers's "query"
+
+Note: started_by and mode are available since PG19.
 
 Details: https://www.postgresql.org/docs/current/progress-reporting.html#VACUUM-PROGRESS-REPORTING
 `
@@ -270,6 +297,7 @@ Details: https://www.postgresql.org/docs/current/progress-reporting.html#CREATE-
 - xact_age		xact_start			Current transaction's duration if active
 - datname		datname				Name of the database this worker is connected to
 - relation		relid				Name of the relation which is processed by this worker
+- started_by		started_by			Who started the analyze: manual or autovacuum
 - state			state				Current overall state of this worker
 - waiting		wait_event_type,wait_event	Wait event name and type for which the worker is waiting, if any
 - phase			phase				Current processing phase of operation
@@ -278,6 +306,8 @@ Details: https://www.postgresql.org/docs/current/progress-reporting.html#CREATE-
 - ext_total/done	ext_stats_total,ext_stats_computed	Total number of extended statistics and number of already computed statistics
 - child_total/done,%	child_tables_total,child_tables_done Total number of child tables and ratio of child tables already processed 
 - child_in_progress	current_child_table_relid	Name of child relation which is processed by this worker
+
+Note: started_by is available since PG19.
 
 Details: https://www.postgresql.org/docs/current/progress-reporting.html#ANALYZE-PROGRESS-REPORTING
 `
@@ -290,6 +320,7 @@ Details: https://www.postgresql.org/docs/current/progress-reporting.html#ANALYZE
 - started_from  	client_addr			Network address of the client performed basebackup
 - started_at		backend_start			Timestamp of when basebackup has been started
 - duration		backend_start			Duration of basebackup
+- backup_type		backup_type			Type of the backup: full or incremental
 - state			state				Current overall state of this worker
 - waiting		wait_event_type,wait_event	Wait event name and type for which the worker is waiting, if any
 - phase			phase				Current processing phase of operation
@@ -297,6 +328,8 @@ Details: https://www.postgresql.org/docs/current/progress-reporting.html#ANALYZE
 - streamed,%		backup_total,backup_streamed	Total amount of data already streamed, in percent
 - streamed,KiB			backup_total,backup_streamed	Amount of data streamed, in KiB
 - tablespaces_total/streamed	tablespaces_total,tablespaces_streamed	Total number of tablespaces and already streamed.
+
+Note: backup_type is available since PG19.
 
 Details: https://www.postgresql.org/docs/current/progress-reporting.html#BASEBACKUP-PROGRESS-REPORTING
 `
@@ -309,6 +342,7 @@ Details: https://www.postgresql.org/docs/current/progress-reporting.html#BASEBAC
 - xact_age		xact_start			Current transaction's duration if active
 - datname		datname				Name of the database this worker is connected to
 - relation		relid				Name of the relation which is processed by this worker
+- started_by		started_by			Who started the analyze: manual or autovacuum
 - state			state				Current overall state of this worker
 - waiting		wait_event_type,wait_event	Wait event name and type for which the worker is waiting, if any
 - command		command				The command that is running: COPY FROM, or COPY TO

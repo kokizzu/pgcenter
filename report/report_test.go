@@ -11,9 +11,11 @@ import (
 	"github.com/lesovsky/pgcenter/internal/stat"
 	"github.com/lesovsky/pgcenter/internal/view"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"io"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1209,4 +1211,560 @@ func Test_describeReport(t *testing.T) {
 		assert.Equal(t, tc.want, buf.String())
 	}
 
+}
+
+func Test_describeProgressColumnOrder(t *testing.T) {
+	// The describe test above compares descriptions by identity, so it cannot notice a row that
+	// landed in the wrong slot. Row order has to match the order the queries emit, otherwise
+	// `report -d` documents a layout that does not exist.
+	testcases := []struct {
+		name    string
+		text    string
+		markers []string
+	}{
+		{
+			name:    "vacuum",
+			text:    pgStatProgressVacuumDescription,
+			markers: []string{"\n- relation", "\n- started_by", "\n- mode", "\n- state"},
+		},
+		{
+			name:    "analyze",
+			text:    pgStatProgressAnalyzeDescription,
+			markers: []string{"\n- relation", "\n- started_by", "\n- state"},
+		},
+		{
+			name:    "basebackup",
+			text:    pgStatProgressBasebackupDescription,
+			markers: []string{"\n- duration", "\n- backup_type", "\n- state"},
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			prev := -1
+			for _, m := range tc.markers {
+				pos := strings.Index(tc.text, m)
+				// Presence first: strings.Index returns -1 for a missing marker, and -1 is less than
+				// anything, so an ordering-only assertion would pass on a row that is not there at all.
+				require.NotEqual(t, -1, pos, "description must contain a row for %q", strings.TrimPrefix(m, "\n- "))
+				assert.Greater(t, pos, prev, "row %q is out of order", strings.TrimPrefix(m, "\n- "))
+				prev = pos
+			}
+		})
+	}
+}
+
+func Test_describeActivityColumnOrder(t *testing.T) {
+	// Same reason as Test_describeProgressColumnOrder: Test_describeReport compares descriptions
+	// by identity and cannot notice a row that landed in the wrong slot. The list below is the
+	// column order of query.PgStatActivityPG13 (internal/query/activity.go) - the layout that
+	// `report -d -A` claims to document.
+	columns := []string{
+		"pid", "leader", "cl_addr", "cl_port", "datname", "usename", "appname", "backend_type",
+		"wait_etype", "wait_event", "state", "backend_xid", "horizon_xacts", "xact_age",
+		"query_age", "change_age", "query",
+	}
+
+	prev := -1
+	for _, c := range columns {
+		// The marker is anchored on both sides: "\n- " keeps it off words inside the prose
+		// (leader_pid, Process ID), and the trailing tab keeps a short name off a longer row -
+		// without it "\n- query" matches the "- query_age" row and the offsets compared below
+		// are not the ones being checked.
+		pos := strings.Index(pgStatActivityDescription, "\n- "+c+"\t")
+		// Presence first: strings.Index returns -1 for a missing marker, and -1 is less than
+		// anything, so an ordering-only assertion would pass on a row that is not there at all.
+		require.NotEqual(t, -1, pos, "description must contain a row for %q", c)
+		assert.Greater(t, pos, prev, "row %q is out of order", c)
+		prev = pos
+	}
+}
+
+func Test_describeActivityCaveats(t *testing.T) {
+	// Each of the three new columns can be misread into a wrong pg_terminate_backend decision,
+	// and there is nothing to catch in code for any of them - the caveats in this block are the
+	// only place the traps are written down. So every caveat is asserted on its own: deleting any
+	// single one must redden a subtest that names it.
+	assert.Contains(t, pgStatActivityDescription, "available since PG13",
+		"block must say the three new columns require PG13+")
+
+	testcases := []struct {
+		name    string
+		markers []string
+	}{
+		{
+			// Derived leader: an empty one would otherwise read as "not a parallel backend".
+			name:    "leader is derived, not the raw leader_pid",
+			markers: []string{"leader_pid"},
+		},
+		{
+			// Backends are not the only holders of the horizon, and the others are not in the view.
+			name:    "horizon covers backend sources only",
+			markers: []string{"replication slots", "prepared transactions", "standby feedback"},
+		},
+		{
+			// Same column name on the replication screen, different formula, incomparable numbers.
+			name:    "horizon_xacts is computed differently than on the replication screen",
+			markers: []string{"age(backend_xmin)", "pg_last_committed_xact()", "replication report"},
+		},
+		{
+			// The operationally heaviest one: blank may mean "not allowed to see", not "holds nothing".
+			name:    "an empty cell may mean missing privileges",
+			markers: []string{"unprivileged"},
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, m := range tc.markers {
+				assert.Contains(t, pgStatActivityDescription, m,
+					"caveat %q is missing or reworded: no %q in the block", tc.name, m)
+			}
+		})
+	}
+}
+
+// Test_printStatSample_zeroWidthGuard pins the zero-width guard of the report
+// truncation path to the semantics of its twin, top/printDataCell
+// (top/stat.go:997-1016): when the column width reads as zero or negative the
+// function returns an error and the cell is NOT printed — not truncated, not
+// silently blank.
+//
+// view.ColsWidth is a map[int]int, so a key that was never computed yields 0
+// without any signal, and `value[:width-1]` becomes `value[:-1]` — a slice
+// bounds panic. A row wider than the layout the widths were computed from is
+// exactly what a mid-archive version change produces, which is why report/
+// must not stay the only unguarded truncation point.
+func Test_printStatSample_zeroWidthGuard(t *testing.T) {
+	newRes := func() *stat.PGresult {
+		return &stat.PGresult{
+			Valid: true, Ncols: 3, Nrows: 1,
+			Cols: []string{"col_a", "col_b", "col_zero"},
+			Values: [][]sql.NullString{
+				{
+					{String: "aaa", Valid: true},
+					{String: "bbb", Valid: true},
+					{String: "zero_width_cell", Valid: true},
+				},
+			},
+		}
+	}
+
+	t.Run("missing width returns error and does not print the cell", func(t *testing.T) {
+		v := view.New()["activity"]
+		v.Cols = []string{"col_a", "col_b", "col_zero"}
+		// No key for index 2: the map returns 0 for it.
+		v.ColsWidth = map[int]int{0: 8, 1: 8}
+
+		var buf bytes.Buffer
+		n, err := printStatSample(&buf, newRes(), v, Config{}, time.Time{}, time.Second)
+
+		require.Error(t, err)
+		assert.Equal(t, 0, n)
+		// Neither the whole value nor a truncated form of it may reach the writer.
+		assert.NotContains(t, buf.String(), "zero_width_cell")
+		assert.NotContains(t, buf.String(), "~")
+	})
+
+	t.Run("normal widths behave as before", func(t *testing.T) {
+		v := view.New()["activity"]
+		v.Cols = []string{"col_a", "col_b", "col_zero"}
+		v.ColsWidth = map[int]int{0: 8, 1: 8, 2: 16}
+
+		var buf bytes.Buffer
+		n, err := printStatSample(&buf, newRes(), v, Config{}, time.Time{}, time.Second)
+
+		assert.NoError(t, err)
+		assert.Equal(t, 1, n)
+		out := stripANSI(buf.String())
+		assert.Contains(t, out, "aaa")
+		assert.Contains(t, out, "bbb")
+		assert.Contains(t, out, "zero_width_cell")
+		assert.NotContains(t, out, "~")
+	})
+
+	t.Run("positive width still truncates", func(t *testing.T) {
+		v := view.New()["activity"]
+		v.Cols = []string{"col_a", "col_b", "col_zero"}
+		v.ColsWidth = map[int]int{0: 8, 1: 8, 2: 4}
+
+		var buf bytes.Buffer
+		n, err := printStatSample(&buf, newRes(), v, Config{}, time.Time{}, time.Second)
+
+		assert.NoError(t, err)
+		assert.Equal(t, 1, n)
+		assert.Contains(t, stripANSI(buf.String()), "zer~")
+	})
+
+	// The guard belongs INSIDE `if valuelen > width`, exactly as in
+	// top/printDataCell: an empty value at a zero width has nothing to truncate
+	// and must not raise an error. Hoisting the guard out of the branch would be
+	// invisible to the subtests above, where every value is non-empty.
+	t.Run("empty value at zero width is not an error", func(t *testing.T) {
+		res := &stat.PGresult{
+			Valid: true, Ncols: 3, Nrows: 1,
+			Cols: []string{"col_a", "col_empty", "col_c"},
+			Values: [][]sql.NullString{
+				{
+					{String: "aaa", Valid: true},
+					{String: "", Valid: true},
+					{String: "ccc", Valid: true},
+				},
+			},
+		}
+
+		v := view.New()["activity"]
+		v.Cols = []string{"col_a", "col_empty", "col_c"}
+		// No key for index 1, but its value is empty, so nothing is truncated.
+		v.ColsWidth = map[int]int{0: 8, 2: 8}
+
+		var buf bytes.Buffer
+		n, err := printStatSample(&buf, res, v, Config{}, time.Time{}, time.Second)
+
+		assert.NoError(t, err)
+		assert.Equal(t, 1, n)
+		out := stripANSI(buf.String())
+		assert.Contains(t, out, "aaa")
+		assert.Contains(t, out, "ccc")
+	})
+}
+
+// activityColsPG12 is the 14-column activity layout recorded by PostgreSQL
+// 10-12: 'state' sits at index 9.
+var activityColsPG12 = []string{
+	"pid", "cl_addr", "cl_port", "datname", "usename", "appname", "backend_type",
+	"wait_etype", "wait_event", "state", "xact_age", "query_age", "change_age", "query",
+}
+
+// activityColsPG13 is the 17-column activity layout recorded by PostgreSQL 13+:
+// three columns are inserted mid-layout, so 'state' moves to index 10 and index
+// 9 — the index 'state' resolved to on the older layout — becomes 'wait_event'.
+var activityColsPG13 = []string{
+	"pid", "leader", "cl_addr", "cl_port", "datname", "usename", "appname", "backend_type",
+	"wait_etype", "wait_event", "state", "backend_xid", "horizon_xacts",
+	"xact_age", "query_age", "change_age", "query",
+}
+
+// activityTick is one recorded sample: the PostgreSQL version stored in the
+// meta.* entry plus the activity result stored next to it.
+type activityTick struct {
+	version int
+	cols    []string
+	rows    [][]string
+}
+
+// activityTarBase is the timestamp of the first tick written by buildActivityTar.
+var activityTarBase = time.Date(2026, 5, 19, 10, 0, 0, 0, time.Now().Location())
+
+// buildActivityTar composes an in-memory recording in the tarRecorder.write()
+// layout — meta.* + activity.* + sysinfo.* per tick, filenames in the recorder's
+// 20060102T150405.000 format, ticks one second apart so itv == 1. Each tick
+// carries its own recorded version, which is what lets a single archive span a
+// major-version boundary the way `pgcenter record -a` across an upgrade does.
+func buildActivityTar(t *testing.T, ticks []activityTick) *bytes.Buffer {
+	t.Helper()
+
+	metaCols := []string{"version", "version_num", "track_commit_timestamp", "max_connections", "autovacuum_max_workers", "recovery", "start_time_unix"}
+	sysinfoBytes := []byte(`{"ticks":100,"cpu_count":4}`)
+
+	var tarBuf bytes.Buffer
+	tw := tar.NewWriter(&tarBuf)
+
+	writeEntry := func(name string, payload []byte) {
+		hdr := &tar.Header{Name: name, Size: int64(len(payload)), Mode: 0644}
+		require.NoError(t, tw.WriteHeader(hdr))
+		_, err := tw.Write(payload)
+		require.NoError(t, err)
+	}
+
+	for i, tick := range ticks {
+		ts := activityTarBase.Add(time.Duration(i) * time.Second).Format("20060102T150405.000")
+
+		// readMeta consumes only column index 1 (version_num); the rest mirrors
+		// SelectCommonProperties so the entry has a realistic shape.
+		metaBytes, err := json.Marshal(stat.PGresult{
+			Valid: true, Ncols: len(metaCols), Nrows: 1, Cols: metaCols,
+			Values: [][]sql.NullString{{
+				{String: fmt.Sprintf("%d.0", tick.version/10000), Valid: true},
+				{String: fmt.Sprintf("%d", tick.version), Valid: true},
+				{String: "off", Valid: true}, {String: "100", Valid: true}, {String: "3", Valid: true},
+				{String: "false", Valid: true}, {String: "1622828486655396e-6", Valid: true},
+			}},
+		})
+		require.NoError(t, err)
+
+		values := make([][]sql.NullString, len(tick.rows))
+		for r, row := range tick.rows {
+			require.Equal(t, len(tick.cols), len(row), "row %d of tick %d does not match its layout", r, i)
+			values[r] = make([]sql.NullString, len(row))
+			for c, v := range row {
+				values[r][c] = sql.NullString{String: v, Valid: true}
+			}
+		}
+		statBytes, err := json.Marshal(stat.PGresult{
+			Valid: true, Ncols: len(tick.cols), Nrows: len(tick.rows),
+			Cols: tick.cols, Values: values,
+		})
+		require.NoError(t, err)
+
+		writeEntry("meta."+ts+".json", metaBytes)
+		writeEntry("activity."+ts+".json", statBytes)
+		writeEntry("sysinfo."+ts+".json", sysinfoBytes)
+	}
+	require.NoError(t, tw.Close())
+
+	return &tarBuf
+}
+
+// runProcessDataOnTar feeds the archive through readTar in a goroutine and calls
+// processData directly in the test goroutine. app.doReport is deliberately
+// bypassed: it runs processData in a goroutine of its own, where a panic takes
+// down the whole test binary instead of reddening a single test.
+func runProcessDataOnTar(t *testing.T, config Config, tarBuf *bytes.Buffer) (string, error) {
+	t.Helper()
+
+	app := newApp(config)
+	var buf bytes.Buffer
+	app.writer = &buf
+
+	dataCh := make(chan data)
+	doneCh := make(chan struct{})
+	readErrCh := make(chan error, 1)
+
+	go func() {
+		readErrCh <- readTar(tar.NewReader(tarBuf), config, dataCh, doneCh)
+	}()
+
+	err := processData(app, app.view, config, dataCh, doneCh)
+
+	// On its error path processData returns without draining or closing the
+	// channels, so readTar stays blocked on one of them. Drain until the reader
+	// signals it is done, otherwise a failing assertion turns into a hang.
+	// Terminating on doneCh is safe because readTar sends it from a defer, i.e.
+	// only after its last send on dataCh has been consumed.
+	if err != nil {
+		go func() {
+			for {
+				select {
+				case <-dataCh:
+				case <-doneCh:
+					return
+				}
+			}
+		}()
+	}
+
+	select {
+	case readErr := <-readErrCh:
+		require.NoError(t, readErr)
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "readTar did not finish")
+	}
+
+	return buf.String(), err
+}
+
+// activityReplayConfig is the report config shared by the version-change tests.
+func activityReplayConfig() Config {
+	return Config{
+		ReportType: "activity",
+		TruncLimit: 32,
+		TsStart:    activityTarBase.Add(-time.Hour),
+		TsEnd:      activityTarBase.Add(time.Hour),
+	}
+}
+
+// Test_processData_versionChange_recomputesLayout replays an archive that spans
+// a 12 -> 13 boundary and asserts that the layout state the older samples left
+// behind does not survive it: the header of the NEW layout must appear (which
+// requires resetting the header-repeat counter, since only two lines were
+// printed before the boundary — far short of repeatHeaderAfter), and the column
+// widths must be recomputed from the new sample rather than inherited.
+//
+// Two ticks per version are required: the first tick of each version is consumed
+// by the version-change branch as the prev snapshot, so a shorter archive would
+// leave the test asserting against an empty report.
+func Test_processData_versionChange_recomputesLayout(t *testing.T) {
+	// 'usename' occupies index 4 of the old layout, where its longest value is
+	// 3 characters, so the old width there is the column-name minimum of 8. In
+	// the new layout index 4 is 'datname', whose value is 23 characters long:
+	// inherited widths would truncate it to "very_lo~".
+	oldRows := [][]string{
+		{"1001", "10.0.0.1", "5432", "olddb", "bob", "psql", "client backend", "Client", "ClientRead", "active", "00:00:01", "00:00:01", "00:00:01", "select 1"},
+		{"1002", "10.0.0.2", "5432", "olddb", "ann", "psql", "client backend", "Client", "ClientRead", "idle", "00:00:02", "00:00:02", "00:00:02", "select 2"},
+	}
+	newRows := [][]string{
+		{"3003", "", "10.0.0.3", "5432", "very_long_database_name", "bob", "psql", "client backend", "Client", "ClientRead", "active", "1234", "42", "00:00:03", "00:00:03", "00:00:03", "select 3"},
+		{"4004", "", "10.0.0.4", "5432", "very_long_database_name", "ann", "psql", "client backend", "Client", "ClientRead", "idle", "", "0", "00:00:04", "00:00:04", "00:00:04", "select 4"},
+	}
+
+	tarBuf := buildActivityTar(t, []activityTick{
+		{version: 120000, cols: activityColsPG12, rows: oldRows},
+		{version: 120000, cols: activityColsPG12, rows: oldRows},
+		{version: 130000, cols: activityColsPG13, rows: newRows},
+		{version: 130000, cols: activityColsPG13, rows: newRows},
+	})
+
+	out, err := runProcessDataOnTar(t, activityReplayConfig(), tarBuf)
+	require.NoError(t, err)
+
+	normalized := stripANSI(out)
+
+	// The pre-boundary half of the report is present at all.
+	assert.Contains(t, normalized, "olddb")
+
+	// Header of the new layout: the three columns inserted at PG 13.
+	assert.Contains(t, normalized, "leader")
+	assert.Contains(t, normalized, "backend_xid")
+	assert.Contains(t, normalized, "horizon_xacts")
+
+	// It is printed immediately, i.e. before the first data row of the new
+	// version — not after another repeatHeaderAfter lines have accumulated.
+	hdrPos := strings.Index(normalized, "horizon_xacts")
+	rowPos := strings.Index(normalized, "very_long_database_name")
+	require.NotEqual(t, -1, hdrPos, "header of the new layout is missing")
+	require.NotEqual(t, -1, rowPos, "data rows of the new version are missing")
+	assert.Less(t, hdrPos, rowPos, "new header must precede the first row of the new version")
+
+	// ...and it is a SECOND header rather than the only one: it follows the rows
+	// printed under the old layout, so the pre-boundary half kept its own header.
+	oldRowPos := strings.Index(normalized, "olddb")
+	require.NotEqual(t, -1, oldRowPos, "data rows of the old version are missing")
+	assert.Less(t, oldRowPos, hdrPos,
+		"new header must be printed after the pre-boundary rows, not instead of the old header")
+
+	// Widths recomputed from the new sample: the value that moved into a
+	// narrower column of the old layout is not truncated by the old width.
+	assert.NotContains(t, normalized, "very_lo~")
+}
+
+// Test_processData_versionChange_reresolvesOrderColumn asserts that -o is
+// re-resolved against the new column list after the boundary. 'state' is index 9
+// on PG 12 and index 10 on PG 13, where index 9 is 'wait_event' — so a surviving
+// index silently sorts the report by a column the operator never asked for.
+//
+// The values discriminate all THREE candidate orders, which is what makes the
+// test load-bearing for the latch specifically. Re-resolving -o against the new
+// list sorts by 'state' descending and puts pid 3003 ("idle") first; a surviving
+// index 9 sorts by 'wait_event' descending and puts 4004 ("ClientRead") first;
+// and merely falling back to the screen default without re-resolving sorts by
+// pid descending, which puts 4004 first too. Without that third case separated,
+// an implementation that never re-resolves would pass.
+func Test_processData_versionChange_reresolvesOrderColumn(t *testing.T) {
+	oldRows := [][]string{
+		{"1001", "10.0.0.1", "5432", "olddb", "bob", "psql", "client backend", "Client", "ClientRead", "active", "00:00:01", "00:00:01", "00:00:01", "select 1"},
+		{"1002", "10.0.0.2", "5432", "olddb", "ann", "psql", "client backend", "Client", "ClientRead", "idle", "00:00:02", "00:00:02", "00:00:02", "select 2"},
+	}
+	newRows := [][]string{
+		{"3003", "", "10.0.0.3", "5432", "newdb", "bob", "psql", "client backend", "Client", "AAAsync", "idle", "1234", "42", "00:00:03", "00:00:03", "00:00:03", "select 3"},
+		{"4004", "", "10.0.0.4", "5432", "newdb", "ann", "psql", "client backend", "Client", "ClientRead", "active", "", "0", "00:00:04", "00:00:04", "00:00:04", "select 4"},
+	}
+
+	tarBuf := buildActivityTar(t, []activityTick{
+		{version: 120000, cols: activityColsPG12, rows: oldRows},
+		{version: 120000, cols: activityColsPG12, rows: oldRows},
+		{version: 130000, cols: activityColsPG13, rows: newRows},
+		{version: 130000, cols: activityColsPG13, rows: newRows},
+	})
+
+	config := activityReplayConfig()
+	config.OrderColName = "state"
+	config.OrderDesc = true
+
+	out, err := runProcessDataOnTar(t, config, tarBuf)
+	require.NoError(t, err)
+
+	normalized := stripANSI(out)
+	posIdle := strings.Index(normalized, "3003")
+	posActive := strings.Index(normalized, "4004")
+	require.NotEqual(t, -1, posIdle, "row 3003 is missing from the report")
+	require.NotEqual(t, -1, posActive, "row 4004 is missing from the report")
+	assert.Less(t, posIdle, posActive,
+		"after the boundary rows must be ordered by state re-resolved against the new layout — "+
+			"not by the stale index (wait_event) and not by the screen default (pid)")
+}
+
+// Test_processData_versionChange_orderColumnMissing covers the case the latch
+// alone cannot fix: the requested -o column does not exist in the new layout, so
+// getColumnIndex fails, the latch simply stays down and the index resolved
+// against the OLD layout would survive. The archive runs 13 -> 12 (an archive
+// stitched across a downgrade; the branch compares versions for inequality, not
+// order) with -o horizon_xacts, which is index 12 on PG 13 and absent on PG 12,
+// where index 12 is 'change_age'.
+//
+// The values distinguish all three states: sorted by the screen default (pid,
+// descending — the seed restored from view.New()) 4004 comes first, while both
+// a surviving index 12 and a restored index 0 with a surviving ascending
+// direction put 3003 first.
+func Test_processData_versionChange_orderColumnMissing(t *testing.T) {
+	// Named by position relative to the boundary, not by PostgreSQL version: this
+	// archive runs 13 -> 12, so the rows recorded FIRST are the 17-column ones.
+	beforeBoundaryRows := [][]string{
+		{"1001", "", "10.0.0.1", "5432", "olddb", "bob", "psql", "client backend", "Client", "ClientRead", "active", "1234", "5", "00:00:01", "00:00:01", "00:00:01", "select 1"},
+		{"1002", "", "10.0.0.2", "5432", "olddb", "ann", "psql", "client backend", "Client", "ClientRead", "idle", "", "9", "00:00:02", "00:00:02", "00:00:02", "select 2"},
+	}
+	afterBoundaryRows := [][]string{
+		{"3003", "10.0.0.3", "5432", "newdb", "bob", "psql", "client backend", "Client", "ClientRead", "active", "00:00:03", "00:00:03", "00:00:01", "select 3"},
+		{"4004", "10.0.0.4", "5432", "newdb", "ann", "psql", "client backend", "Client", "ClientRead", "idle", "00:00:04", "00:00:04", "00:00:09", "select 4"},
+	}
+
+	tarBuf := buildActivityTar(t, []activityTick{
+		{version: 130000, cols: activityColsPG13, rows: beforeBoundaryRows},
+		{version: 130000, cols: activityColsPG13, rows: beforeBoundaryRows},
+		{version: 120000, cols: activityColsPG12, rows: afterBoundaryRows},
+		{version: 120000, cols: activityColsPG12, rows: afterBoundaryRows},
+	})
+
+	config := activityReplayConfig()
+	config.OrderColName = "horizon_xacts"
+	config.OrderDesc = false
+
+	out, err := runProcessDataOnTar(t, config, tarBuf)
+	require.NoError(t, err)
+
+	normalized := stripANSI(out)
+	posHigh := strings.Index(normalized, "4004")
+	posLow := strings.Index(normalized, "3003")
+	require.NotEqual(t, -1, posHigh, "row 4004 is missing from the report")
+	require.NotEqual(t, -1, posLow, "row 3003 is missing from the report")
+	assert.Less(t, posHigh, posLow, "after the boundary the screen default sort key must be restored")
+}
+
+// Test_app_doReport_errorPathDoesNotHang drives the real app.doReport, which the other
+// tests in this file deliberately bypass — and that bypass is exactly why the hang went
+// unnoticed: runProcessDataOnTar drains the channels itself, so it never reproduces what
+// production does.
+//
+// The archive widens between two samples of the SAME version, so the alignment computed
+// for the narrow layout leaves the extra columns without a width. The zero-width guard in
+// printStatSample turns what used to be a `[:-1]` panic into a returned error — and an
+// error out of processData leaves readTar blocked on two unbuffered channels with no
+// receiver, so before the drain was added the command hung forever instead of exiting.
+// A silent hang is worse than a crash for a CLI in a pipe.
+func Test_app_doReport_errorPathDoesNotHang(t *testing.T) {
+	narrow := []string{"pid", "datname"}
+	wide := []string{"pid", "datname", "usename", "state"}
+
+	tarBuf := buildActivityTar(t, []activityTick{
+		{version: 170000, cols: narrow, rows: [][]string{{"100", "postgres"}}},
+		{version: 170000, cols: narrow, rows: [][]string{{"100", "postgres"}}},
+		{version: 170000, cols: wide, rows: [][]string{{"100", "a_database_name_wider_than_the_column", "postgres", "active"}}},
+		{version: 170000, cols: wide, rows: [][]string{{"100", "a_database_name_wider_than_the_column", "postgres", "active"}}},
+	})
+
+	app := &app{
+		config: Config{ReportType: "activity", TsStart: time.Unix(0, 0), TsEnd: time.Now().Add(time.Hour), TruncLimit: 32},
+		view:   view.New()["activity"],
+		writer: io.Discard,
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- app.doReport(tar.NewReader(bytes.NewReader(tarBuf.Bytes()))) }()
+
+	select {
+	case err := <-done:
+		assert.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("doReport did not return: readTar is still blocked, the command would hang forever")
+	}
 }

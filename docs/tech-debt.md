@@ -7,6 +7,152 @@ Reviewed at the start of tech-spec planning to avoid worsening existing debt.
 
 ## Active Debt
 
+### [022] Stats descriptions in `internal/stat/help.go` are dead code, and stale on top of it
+
+**Added:** 2026-07-25 (surfaced during feature: 013-feat-activity-xmin-horizon)
+**Severity:** Low
+**Area:** `internal/stat/help.go`, `report/describe.go`
+
+**What:** the file exports fifteen `PgStat*Description` constants and nothing in the repository reads any
+of them — the descriptions `report -d` actually prints live in `report/describe.go`. Dead would be
+harmless; dead and wrong is not. The replication block of `help.go` (lines 59-60) still calls the two
+xmin-horizon columns `xact_age*` and `time_age*`, while the live file names the same two values
+`horizon_xacts` and `horizon_age` (`report/describe.go:75-76`). Whoever opens the exported constant
+gets column names the tool does not print. The activity block of `help.go` is not stale in this way:
+`xact_age` there means transaction duration, exactly as in the live file.
+
+**Why deferred:** the naming divergence predates this feature and has nothing to do with the activity
+column it adds; the feature only decided (Decision 8) to document its three new columns in
+`report/describe.go` alone instead of mirroring them into unreachable code. Deleting the file is the
+right fix, but removing an exported API surface deserves its own change and its own review. Action at
+that point: drop `internal/stat/help.go` outright — there is no consumer to migrate.
+
+---
+
+### [023] `horizon_xacts` names two different quantities on two screens
+
+**Added:** 2026-07-25 (surfaced during feature: 013-feat-activity-xmin-horizon)
+**Severity:** Low
+**Area:** `internal/query/activity.go`, `internal/query/replication.go`
+
+**What:** on the activity screen `horizon_xacts` is `age(backend_xmin)` — needs no GUC, never negative,
+correct across xid wraparound. On the replication screen the column of the same name is
+`(pg_last_committed_xact()).xid - backend_xmin`: it exists only when `track_commit_timestamp` is on
+(the selector picks the extended query on that GUC alone, so with it off the column is simply absent),
+it is a plain subtraction that goes negative when the standby's reported xmin is ahead of the last
+locally committed xact, and it is not wraparound-safe. An operator moving between the two screens sees
+one column name and is entitled to assume one quantity.
+
+**Why deferred:** reconciling them is not a rename — one of the two definitions has to change, and the
+replication one cannot simply adopt `age()` without deciding what that screen should show when
+`track_commit_timestamp` is off. The backlog item that forces the decision already exists: the full
+"who holds the xmin horizon" aggregate in [roadmap-0.12.0.md](roadmap-0.12.0.md) gathers all horizon
+sources into one place and cannot put them side by side until the two formulas agree. Registered so
+that work starts from a known divergence rather than discovering one.
+
+---
+
+### [024] Test port map promises clusters the test image does not contain
+
+**Added:** 2026-07-25 (surfaced during feature: 013-feat-activity-xmin-horizon)
+**Severity:** Low
+**Area:** `internal/postgres/testing.go`, `testing/Dockerfile`
+
+**What:** `NewTestConnectVersion` maps thirteen majors to ports — PG 14–19 on 21914–21919, plus PG 10–13
+on 21910–21913 and PG 9.4–9.6 on 21994–21996 (two separate ranges, not one). The `pgcenter-testing`
+image builds PG 14–19 only. A version table listing a mapped-but-absent version gets a connection
+error, and callers turn that into `t.Skip` as the function's own doc comment instructs — which CI
+reports as a pass. The map's comment ("EOL versions kept for reference") is honest about the intent,
+but nothing signals that the coverage those tables appear to declare does not exist. Adjacent to [019],
+which is about a skip swallowing the *remaining* versions rather than about the version being absent
+in the first place.
+
+**Why deferred:** the entries cannot just be deleted — version tables in `internal/query` and
+`internal/stat` iterate over them, so removing a mapping changes what those tables assert, and how far
+back pgcenter claims to be tested is a product decision, not a cleanup. This feature is directly
+exposed to it: the new activity branch boundary sits at PG 13 (Decision 2), exactly where no live
+cluster exists, so the only guard on that boundary is a table test. Action at that point: settle the
+supported floor, then either drop the unreachable entries or make a mapped-but-absent version fail
+instead of skip.
+
+---
+
+
+
+### [017] Beta apt channel left in the test image after PG 19 GA
+
+**Added:** 2026-07-25 (feature: 012-feat-pg19-compatibility-baseline)
+**Severity:** Low
+**Area:** `testing/Dockerfile`
+
+**What:** PG 19 is installed from the `jammy-pgdg-testing 19` channel because it is a beta. Package names
+are explicit, so no foreign major version can arrive on its own — but while that source file is present,
+PG 19 keeps coming from the beta channel on every rebuild, including the rebuild meant to verify GA.
+
+**Why deferred:** the removal only makes sense once GA packages exist in the stable channel. Action at
+that point: delete the source file and let PG 19 install from `jammy-pgdg main` alongside 14–18.
+
+---
+
+### [018] delay_time not exposed on the vacuum and analyze progress screens
+
+**Added:** 2026-07-25 (feature: 012-feat-pg19-compatibility-baseline)
+**Severity:** Low
+**Area:** `internal/query/progress_vacuum.go`, `internal/query/progress_analyze.go`
+
+**What:** both views carry `delay_time` — total time the operation slept due to cost-based delay. It is not
+shown.
+
+**Why deferred:** it arrived in PG 18, not PG 19, so it is not part of the PG 19 catch-up; showing it
+honestly needs a third version branch in two selectors; and it reads zero unless `track_cost_delay_timing`
+is on, which is off by default — a column of zeros on a typical installation. Worth its own decision about
+whether the signal justifies the column.
+
+---
+
+### [019] Nine tests skip every version when one cluster is unavailable
+
+**Added:** 2026-07-25 (surfaced during feature: 012-feat-pg19-compatibility-baseline)
+**Severity:** Low
+**Area:** `internal/query/common_test.go`, `internal/query/overview_test.go`, `internal/stat/postgres_test.go`
+
+**What:** nine tests call `t.Skipf` inside their version loop but have no per-version `t.Run` wrapper, so
+the skip fires on the parent test and every remaining version is skipped too. `common_test.go`'s
+full-range list therefore already dead-skips in CI at `90500` — these tests provide no coverage today.
+
+**Why deferred:** pre-existing, not opened by this feature, and the fix is adding the subtest wrapper to
+nine tests in files this feature otherwise only appends a literal to — a refactor with its own review
+surface.
+
+---
+
+### [020] Diff loop indexes the previous snapshot by the current snapshot's width
+
+**Added:** 2026-07-25 (surfaced during feature: 012-feat-pg19-compatibility-baseline, security audit)
+**Severity:** Low
+**Area:** `internal/stat/postgres.go` (`diff`), `report/report.go`
+
+**What:** the diff loop walks `curr.Ncols` and indexes `prev.Values[j][l]` without checking the previous
+row's width. A mixed-width pair would dereference past the end.
+
+**Why deferred:** the previous justification rested on the replay loop dropping the previous snapshot on
+a version change, and concluded a mixed-width pair cannot occur. That guarantee is narrower than it
+looked. `PGresult.validate` checks each row's width against `len(Cols)` and `Nrows` against the number
+of decoded rows, and nothing else — not `Ncols` against `Cols`, not one sample's width against the
+next's. A recorded result can therefore declare more columns than its rows carry, or widen between two
+samples of the same version, and reach the diff loop on any screen with a non-empty `DiffIntvl`.
+Both shapes were **reproduced** during feature 013's task-03 security audit — a result declaring
+`Ncols: 999` over two real columns, and two same-version samples of differing width — so this is a
+demonstrated panic rather than an inferred one. Severity stays Low for consistency with [009], which
+covered a comparable malformed-archive class; what changed is that the reachability is now measured.
+It stays deferred rather than closed because the screen this feature touches cannot be the trigger:
+`activity` runs with `DiffIntvl {0,0}`, so `diff()` is never called there at all. Closing it means
+validating archive-declared shapes generally — in `validate()`, which is the one place that
+sees a result before any consumer does. Its siblings [021], [025] and [026] are now resolved; this is
+the last of the family still open, and the code review of feature 013 noted that `align.SetAlign` is a
+third unsafe consumer alongside `diff`, so fixing `diff` alone would not close the class.
+
+---
 ### [016] Collector/parsers swallow errors silently — no logging facility
 
 **Added:** 2026-06-25 (surfaced during debt audit; pre-existing since original pgcenter)
@@ -56,6 +202,79 @@ Reviewed at the start of tech-spec planning to avoid worsening existing debt.
 ---
 
 ## Resolved Debt
+
+### [025] `PGresult.sort` does not bounds-check its sort key
+
+**Added:** 2026-07-25 (surfaced during feature: 013-feat-activity-xmin-horizon, security audit)
+**Resolved:** 2026-07-26 (feature: 013-feat-activity-xmin-horizon, code review)
+**Severity:** Low
+**Area:** `internal/stat/postgres.go` (`sort`, `validate`), `report/report.go`
+
+**What:** `sort` indexes `r.Values[i][key]` without checking `key` against the row width, and the key
+never comes from the data being sorted — it is either the screen's seed `OrderKey` from `view.New()`
+(0 for most screens, 2 for `progress_index`, 4 for the `statements_*` ones) or an index resolved
+against an earlier sample. `validate` does not close the gap: it compares each row's width to
+`len(Cols)`, so a recorded result whose `Cols` is empty and whose rows are zero-width is accepted and
+then panics on the first sort. Verified end to end during the task-03 security review — a crafted
+archive aborts `pgcenter report` with `index out of range`, on any report type, with or without `-o`,
+and with no version change involved.
+
+**Resolution:** the guard landed in the stat layer rather than at the call site, exactly as this entry
+proposed: `sort` now returns early when the key is negative or outside the row, keeping the input
+order. One place covers the seed-`OrderKey` route this feature added, the pre-existing routes, and the
+`top` caller. Code review reproduced the new route against `develop` before the fix — an archive whose
+`-o` column is absent from a later layout panicked with `index out of range [4] with length 3` — and
+`Test_sort_keyOutOfRange` was shown red on the unguarded code first.
+---
+
+### [026] Report error paths leave the reader blocked, so the command hangs instead of exiting
+
+**Added:** 2026-07-25 (surfaced during feature: 013-feat-activity-xmin-horizon, security audit)
+**Resolved:** 2026-07-26 (feature: 013-feat-activity-xmin-horizon, code review)
+**Severity:** Low
+**Area:** `report/report.go` (`doReport`, `readTar`, `processData`)
+
+**What:** every `return err` in `processData` abandons the pipeline while `readTar` is still running.
+The data channel is unbuffered and no one drains it, so the reader blocks on its next send, `doReport`
+waits on the WaitGroup forever, and the command neither prints the error nor exits. This stopped being
+theoretical here: the zero-width guard restored in task 03 ([021]) turns a slice-bounds panic into a
+returned error, so a same-version archive whose samples widen — [020]'s territory — now hangs where it
+used to crash. For a CLI that is arguably the worse of the two: a crash at least says that something
+happened.
+
+**Resolution:** fixed for every error path at once rather than for the newest one, as this entry
+required. `doReport` now drains `dataCh` until `readTar` signals completion, so an error out of
+`processData` lets the command print and exit instead of blocking on two unbuffered channels. Covered
+by `Test_app_doReport_errorPathDoesNotHang`, which drives the real `doReport` — the other tests in that
+file deliberately bypass it, which is why the hang went unnoticed until code review reproduced it.
+---
+
+### [021] Column widths not recomputed after a mid-archive version change
+
+**Added:** 2026-07-25 (surfaced during feature: 012-feat-pg19-compatibility-baseline, architecture review)
+**Resolved:** 2026-07-25 (feature: 013-feat-activity-xmin-horizon, task 03)
+**Severity:** Low
+**Area:** `report/report.go` (`formatStatSample`)
+
+**What:** the alignment flag is set on the first printed sample and never reset, and `Configure` does not
+clear it on a version change. An archive spanning a major upgrade (`record -a` across the upgrade) renders
+its later samples with the earlier layout's widths.
+
+**Resolution:** the replay loop now separates "no previous sample yet" from "the recorded version
+changed" and, on the latter, drops three pieces of state derived from the layout it is leaving: the
+alignment latch (together with the `ColsWidth`/`Cols` pair it produced, so the next sample recomputes
+both), the header-repeat counter (reset to its seed value, so the new layout prints its own header
+immediately), and the resolved `-o` column index. The third was not in the original report and is the
+worst of the three: a stale index silently sorts the remaining samples by whatever column now sits at
+that position. It is re-resolved against the next sample's column list, falling back meanwhile to the
+screen's seed sort key captured before the first `Configure`, because the requested column may be
+absent from the new layout. Landed with it: the zero-width guard in the report truncation path,
+restored to match its twin in `top/printDataCell` (Decision 6) — a column the alignment never saw reads
+as width 0 out of the `ColsWidth` map, and slicing on that panicked. That guard has its own
+consequence, registered as [026]: it returns an error into a pipeline that does not unwind. The sibling
+entry [020] stays open — see its own note for why this resolution does not close it.
+
+---
 
 ### [012] verbose pgstat Size-formatted fields width-breathe between values
 
