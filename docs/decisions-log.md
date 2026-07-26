@@ -844,3 +844,111 @@ baked in.
 
 **Alternatives considered:** none — the screen is unverifiable otherwise.
 
+
+## [013-feat-activity-xmin-horizon] Parallel grouping via a derived column, not the raw `leader_pid`
+
+**Date:** 2026-07-26
+**Feature:** 013-feat-activity-xmin-horizon
+**Status:** Accepted
+
+**Context:** the roadmap scoped the parallel half of this feature as "expose `leader_pid` so parallel
+workers can be sorted next to their leader".
+
+**Decision:** expose `coalesce(leader_pid, pid)` under the name `leader` instead.
+
+**Rationale:** `leader_pid` is NULL for the leader itself — it is non-empty only on workers. Sorting
+by the raw column therefore does not achieve the stated goal at all: the leader sorts into the NULL
+block together with every unrelated backend, away from its own workers. Confirmed on a live 4-worker
+scan during acceptance. The derived column gives the leader and all its workers one value and leaves
+unrelated backends on their own PIDs. The cost is that the column is not a catalog field, which is
+why `report -d -A` says so explicitly.
+
+**Alternatives considered:** the raw `leader_pid` (rejected — does not group); the derived value under
+the name `leader_pid` (rejected — the name would then lie about its source); a "hide parallel workers"
+toggle (rejected — duplicates the existing filter machinery for a narrower case).
+
+---
+
+## [013-feat-activity-xmin-horizon] `backend_xid` kept as a raw column though only its presence matters
+
+**Date:** 2026-07-26
+**Feature:** 013-feat-activity-xmin-horizon
+**Status:** Accepted
+
+**Context:** the raw `backend_xmin` was dropped from the planned column set as an unreadable bigint
+superseded by the derived `horizon_xacts`. The same argument applies to `backend_xid`, whose numeric
+value is equally meaningless — only blank-versus-set carries information.
+
+**Decision:** keep `backend_xid` as a raw catalog column rather than synthesising a boolean indicator.
+
+**Rationale:** it answers a question nothing else on the screen answers — has this transaction
+written — which decides whether terminating it is cheap. The `query` column does not answer it and
+actively misleads: for an `idle in transaction` session it holds the *last* statement, so a
+transaction that ran `INSERT` then `SELECT` looks read-only. Reproduced during acceptance: a session
+showed `pg_sleep` in `query` while `backend_xid` was set. As for the form, `backend_xid` is a catalog
+name a DBA already knows, whereas a synthesised yes/no column would need its own explanation, and
+pgcenter has no precedent for inventing boolean columns — the boolean on the slots screen comes from
+the catalog.
+
+**Alternatives considered:** dropping it with `backend_xmin` (rejected — loses the kill-safety signal);
+a synthesised indicator column (rejected — new idiom, needs explaining, no precedent).
+
+---
+
+## [013-feat-activity-xmin-horizon] Empty cells sort last in every comparator mode
+
+**Date:** 2026-07-26
+**Feature:** 013-feat-activity-xmin-horizon
+**Status:** Accepted
+
+**Context:** `PGresult.sort` chose its comparator from row 0 and let a blank parse as `0`. On a column
+that is blank for most rows — which the new horizon columns are — the mode was effectively decided by
+which row happened to be first, and blanks were indistinguishable from a genuine zero.
+
+**Decision:** choose the mode from the first non-empty cell, and order empty cells after all non-empty
+ones regardless of direction and of comparator mode, strings included. Emptiness is decided by the
+rendered string, not by `sql.NullString.Valid`.
+
+**Rationale:** `horizon_xacts = 0` is a real state ("holds a snapshot taken right now") that must not
+collide with "holds no snapshot". Applying the rule uniformly is the *smaller* implementation — one
+wrapper around all three comparators rather than the same wrapper plus a carve-out — and states as one
+sentence with no exceptions. Keying on `Valid` was rejected on two grounds: every render path prints
+`.String` alone, so a NULL and a genuine empty string are indistinguishable on screen and ordering
+them differently would be inexplicable; and `diff()` sets `Valid` true unconditionally inside the
+`DiffIntvl` range, so the rule would behave differently on diffed and non-diffed screens.
+
+Honest framing of the blast radius: for numeric columns this is a correctness fix, for strings it is a
+presentation choice. The most visible beneficiary is the `replslots` default sort key, whose SQL
+already declared `DESC NULLS LAST` — the change brings Go into agreement with the query.
+
+**Alternatives considered:** fixing only the mode selection (rejected — blanks would still collide
+with a genuine zero); restricting the rule to numeric and duration modes (rejected — more code and an
+exception a maintainer would have to re-justify).
+
+---
+
+## [013-feat-activity-xmin-horizon] Branch at PG 13 although the boundary cannot be verified live
+
+**Date:** 2026-07-26
+**Feature:** 013-feat-activity-xmin-horizon
+**Status:** Accepted
+
+**Context:** `leader_pid` arrived in PG 13, but the test image carries PG 14–19 only.
+
+**Decision:** branch at PG 13 anyway, as an early return above the existing selector switch, and pin
+the boundary from both sides in the table test.
+
+**Rationale:** correctness follows the catalog, not the fixture set; branching at 14 would withhold
+working columns from PG 13 for no reason other than our own test matrix. The consequence has to be
+stated rather than hidden: writing `140000` where `130000` belongs would pass every live check, so the
+table test is the only guard that exists. Placing the new branch as an early return keeps the historic
+switch untouched, so `PgStatActivityDefault` still names that switch's `default:` case.
+
+An earlier draft renamed the constants to make `Default` the newest branch, justified by a project
+convention that turned out not to exist — `wal.go` and `progress_vacuum.go` do the opposite of each
+other and `bgwriter.go`/`io.go` have no `Default` at all. The early return achieves the same goal
+without touching five files.
+
+**Alternatives considered:** branching at 14 (rejected — matches fixtures, not reality); adding a PG 13
+cluster (rejected — disproportionate, PG 13 is past EOL); renaming the constants (rejected — rested on
+a convention that does not exist).

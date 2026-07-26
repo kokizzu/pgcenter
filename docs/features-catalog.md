@@ -293,3 +293,46 @@ or autovacuum's, and is it aggressive?" without leaving for psql.
 scrolls), [008-feat-record-report-0-11-views] (report replay picks the layout from the archive's recorded
 version, which is what keeps old archives correct).
 
+
+---
+
+### [013-feat-activity-xmin-horizon] Activity Screen: xmin Horizon and Parallel Worker Grouping
+
+**What it does:** Adds three columns to the activity screen on PostgreSQL 13 and newer — `leader`,
+`backend_xid` and `horizon_xacts` — so a DBA can answer, without leaving pgcenter for `psql`, which
+session is holding the xmin horizon and blocking vacuum, how long it has been there, and whether
+terminating it is cheap. Closes issue #148.
+
+**Key scenarios:**
+- Sort by `horizon_xacts` descending: the top row is the session holding the oldest horizon.
+  Read `xact_age` beside it for how long the transaction has been open and `state` to tell a working
+  session from one stuck in `idle in transaction`.
+- Check `backend_xid` before terminating: blank means the transaction has written nothing and can be
+  killed cheaply. This is the one place that answers it — for an `idle in transaction` session the
+  `query` column shows the *last* statement, so a transaction that wrote can look read-only.
+- Sort by `leader` to collapse a parallel query: the leader and all its workers share one value, so
+  thirty rows read as one query rather than thirty clients. A backend that is not part of a parallel
+  group shows its own PID.
+- `pgcenter report -d -A` explains all three columns and the four things about them that are easy to
+  read wrongly.
+
+**Limitations:**
+- The columns need PostgreSQL 13 or newer. On PG 10–12 the screen keeps its previous 14 columns with
+  no message — this is the older layout, not a disabled feature.
+- The horizon is shown **for backends only**. Replication slots, prepared transactions and standby
+  feedback hold it back too and do not appear in `pg_stat_activity` at all, so a blank column does not
+  mean nobody holds the horizon. The full aggregate across all four sources is a 0.13.0 backlog item.
+- A blank cell may also mean the viewer lacks privileges to see another session's state — PostgreSQL
+  returns NULL rather than an error for unprivileged roles.
+- `horizon_xacts` is measured in transactions only. There is no honest conversion to wall-clock time;
+  the time dimension is the neighbouring `xact_age` column.
+- The same column name on the `replication` screen is computed by a different formula and the two
+  numbers are not directly comparable (tech debt [023]).
+- `query` now sits 38 characters further right for everyone, including users who never look at the
+  horizon.
+
+**Touches:** Every screen of the main table, through the shared sort function — sorting a column that
+is blank for some rows now places those rows last in both directions instead of treating a blank as
+zero. Most visible on [005-feat-replication-slots], whose default sort key is sparse.
+[009-feat-horizontal-scroll] is what makes the wider screen usable. The `report` replay path gained
+correct handling of a recorded version change, which matters for archives spanning a major upgrade.

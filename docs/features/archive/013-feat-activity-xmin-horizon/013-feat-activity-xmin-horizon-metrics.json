@@ -1,0 +1,68 @@
+{
+  "meta": {
+    "schema_version": "1.0",
+    "feature_id": "013",
+    "feature_name": "activity-xmin-horizon",
+    "feature_base": "docs/features/013-feat-activity-xmin-horizon/013-feat-activity-xmin-horizon",
+    "project": "pgcenter",
+    "feature_size": "M",
+    "model": "claude-opus-5[1m]",
+    "date_started": "2026-07-25",
+    "date_completed": "2026-07-26"
+  },
+  "phases": {
+    "user_spec": {
+      "started": "2026-07-25 14:58:26",
+      "ended": "2026-07-25 22:01:44",
+      "human_wait_time_min": 0
+    },
+    "tech_spec": {
+      "started": "2026-07-25 22:05:00",
+      "ended": "2026-07-25 23:30:00",
+      "human_wait_time_min": 0
+    },
+    "task_decomposition": {
+      "started": "2026-07-25 23:35:00",
+      "ended": "2026-07-26 01:20:00",
+      "human_wait_time_min": 0
+    },
+    "feature_execution": {
+      "started": "2026-07-26 01:25:00",
+      "ended": "2026-07-26 01:50:00",
+      "human_wait_time_min": 0
+    },
+    "done": {
+      "started": "2026-07-26 15:00:00",
+      "ended": "2026-07-26 15:20:00",
+      "human_wait_time_min": 0
+    }
+  },
+  "quality": {
+    "validation_rounds": {
+      "user_spec": 2,
+      "tech_spec": 2,
+      "task_decomposition": 2
+    },
+    "validation_findings": {
+      "critical": 11,
+      "major": 37,
+      "minor": 88
+    },
+    "review_rounds": {
+      "implementation": 1
+    },
+    "review_findings": {
+      "critical": 0,
+      "major": 3,
+      "minor": 13
+    },
+    "first_pass_rate_pct": 50
+  },
+  "volume": {
+    "interview_questions": 8,
+    "tasks_count": 6,
+    "waves_count": 3,
+    "agents_spawned": 22,
+    "commits_count": 6
+  }
+}

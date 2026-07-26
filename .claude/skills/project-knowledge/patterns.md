@@ -134,7 +134,40 @@ Exception: `printCmdline()` and `fmt.Sprintf()` use `%s` (not error wrapping fun
 
 ## Sorting
 
-Use `sort.SliceStable` (not `sort.Slice`) in `internal/stat/postgres.go` to ensure deterministic ordering of rows with equal sort keys across Go versions.
+Use `sort.SliceStable` (not `sort.Slice`) in `internal/stat/postgres.go` to ensure deterministic ordering of rows with equal sort keys across Go versions. Stability is load-bearing, not cosmetic: the activity screen's parallel-group view relies on rows with an equal `leader` staying in the `ORDER BY pid DESC` order the query gave them.
+
+`PGresult.sort` (013-feat-activity-xmin-horizon) carries three rules that a sparse column made necessary:
+
+- **The comparator mode is chosen from the first non-empty cell**, not from row 0. A blank first cell fails both `ParseFloat` and `parseDuration`, so a numeric column would silently fall into the string comparator, where `"9"` outranks `"1000000"`.
+- **An empty cell orders last in both directions and in all three modes.** Emptiness is decided by the rendered string, deliberately not by `sql.NullString.Valid`: every render path prints `.String` alone, so a SQL NULL and a genuine empty string look identical on screen and must not be ordered differently. `Valid` is also unreliable for this — `diff()` sets it true unconditionally inside the `DiffIntvl` range, so it would mean different things on diffed and non-diffed screens. Before this rule, a blank parsed as `0` and was indistinguishable from a genuine zero.
+- **The sort key is bounds-checked.** It never comes from the data being sorted — it is a screen seed or an index resolved against an earlier sample — so a replayed archive can hand it a key the current layout does not have.
+
+**Testing a sort change is where this is easy to get wrong.** Two obvious constructions do not discriminate: a lone blank under descending sort lands last under both old and new behaviour, and putting the blank first only diverges if the remaining values order differently lexicographically than numerically (`2048` before `1024` does not; `512` vs `1024` does). Any test here must be **shown failing against the unfixed comparator**, not reasoned about — three successive specification attempts at this were each too weak, and the values that trip it are the ones already sitting in the neighbouring test.
+
+## Report replay across a recorded version change
+
+`report/report.go:processData` reconfigures the view when a replayed sample's recorded PG version
+changes. `Configure` rewrites the query and column count and nothing else, so anything derived from
+the previous layout survives unless it is reset explicitly. Three things must be
+(013-feat-activity-xmin-horizon, closing debt [021]):
+
+- the alignment flag, or widths from the old layout are reused;
+- the header-repeat counter, or the previous header stays on screen for another 20 rows;
+- the resolved sort column — and **restoring the view's seed key is required, not just re-arming the
+  latch**: if the requested `-o` column is absent from the new layout, the latch simply stays down and
+  the index resolved against the old layout survives. With columns inserted mid-layout that index now
+  denotes a different column, so the report sorts by something the operator did not ask for — a wrong
+  answer with no symptom.
+
+Two traps when testing this. The replay path consumes the first sample after a version change, so the
+archive needs at least two samples on each side. And `processData` runs in a goroutine, so a panic
+there takes down the whole test binary instead of reddening one test — drive the formatting function
+directly.
+
+**Error paths in that pipeline must leave the reader unblocked.** `readTar` sends on an unbuffered
+channel and signals completion from a defer; a `processData` error that abandons both leaves the
+command hanging rather than exiting, which for a CLI in a pipe is worse than a crash. `doReport`
+drains until the reader finishes.
 
 ## Manual Testing / QA Phase
 

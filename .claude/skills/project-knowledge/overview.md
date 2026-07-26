@@ -14,7 +14,7 @@ It reads PostgreSQL internal statistics views and presents them in a top-like in
 
 ## Supported PostgreSQL Statistics
 
-- `pg_stat_activity` — active connections and their state
+- `pg_stat_activity` — active connections and their state; on PG 13+ also `leader` (which parallel group a backend belongs to), `backend_xid` (has the transaction written) and `horizon_xacts` (how far back it holds the xmin horizon), so "who is blocking vacuum and is killing them cheap" is answerable without leaving pgcenter
 - `pg_stat_database` — per-database metrics (commits, rollbacks, tuples, deadlocks, temp files)
 - `pg_stat_replication` — connected standbys and replication lag
 - `pg_stat_user_tables`, `pg_stat_user_indexes` — table/index access stats
