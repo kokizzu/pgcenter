@@ -185,8 +185,10 @@ hidden to the left/right. Closes issue #14, the most-requested item, open since 
 - Switch to another screen (including the per-process screen via `Shift+S`): the new screen
   opens unscrolled (offset reset to 0). The offset persists across auto-refresh ticks within one screen.
 - On a wide terminal where everything fits, `[`/`]` are no-ops and no markers are shown.
-- Sorting (`←`/`→`) and scrolling (`[`/`]`) are independent — the sort column may sit outside the
-  visible window, which is expected (no auto-scroll to the sort column).
+- Sorting (`←`/`→`) and scrolling (`[`/`]`) are independent in the sense that a manual scroll is
+  never undone by a refresh. **Superseded in part by [015-feat-tui-papercuts]:** changing the sort
+  column now scrolls the window to bring that column into view, so "the sort column may sit outside
+  the visible window" is no longer expected behaviour.
 
 **Limitations:**
 - **Main stats table only.** The side extra-panels (iostat / netdev / fsstats / logtail) do not
@@ -336,3 +338,47 @@ is blank for some rows now places those rows last in both directions instead of 
 zero. Most visible on [005-feat-replication-slots], whose default sort key is sparse.
 [009-feat-horizontal-scroll] is what makes the wider screen usable. The `report` replay path gained
 correct handling of a recorded version change, which matters for archives spanning a major upgrade.
+
+---
+
+### [015-feat-tui-papercuts] Interactive-mode Papercuts
+
+**What it does:** Removes seven frictions that made `pgcenter top` slower to drive than it should
+be. Sorting now scrolls the column window to whatever column you sorted by; an active filter is
+announced permanently in the command line instead of only by a `*` on a header that may itself be
+off-screen; `\` clears every filter of the current screen at once; the refresh interval is shown in
+the header; the verbose panels stop wasting a screen row and highlight their values the way the
+normal rows always did; and dialog prompts line up with their input field in both display modes.
+
+**Key scenarios:**
+- On a narrow terminal, press `→` past the right edge: the window follows the sort column and brings
+  it into view, highlight included. Scroll away with `[`/`]` afterwards and it stays where you put
+  it — the window is only moved when the sort column changes.
+- Set a filter, then scroll its column off-screen or switch to another screen and back: the command
+  line keeps showing `[F:datname]`, so a filtered view can no longer be mistaken for the whole
+  picture. With several filters it lists them all: `[F:datname,usename]`.
+- Press `\` to drop every filter on the screen at once, instead of hunting down each column that set
+  one. The message says how many were removed, or says plainly that there were none.
+- Press `v`: the verbose panels expand with no blank gap above the table, values are highlighted,
+  and degraded `n/a` fields stay plain so a missing signal still looks different from a real number.
+- Open any dialog with a filter active: the prompt and the input field stay aligned, in both compact
+  and verbose mode. An overlong prompt is cut with an ellipsis rather than covered by the field.
+
+**Limitations:**
+- Pause on `Space` was planned for this batch and **split into its own feature** ([016] on the
+  0.12.0 roadmap): sorting runs in the collector goroutine, so a paused screen cannot re-sort, and
+  returning from the pager rebuilds the UI with no frame to repaint. Both need product decisions of
+  their own.
+- The auto-scroll fires only when the sort column changes. Entering a screen whose default sort
+  column sits off-screen leaves it there until the first arrow press — reachable only on terminals
+  narrower than about 80 columns.
+- Filters still combine as OR, not AND. The indicator makes that visible for the first time but does
+  not change it.
+- Messages printed after a dialog closes remain invisible (pre-existing, registered as tech debt),
+  so one of the three filter messages can only be seen in tests, not on screen.
+- The verbose threshold moved from 13 terminal rows to 12 — verbose now engages one row earlier.
+
+**Touches:** [009-feat-horizontal-scroll] — supersedes its "no auto-scroll to the sort column"
+limitation and reuses its column-window function. [010-feat-overview-dashboard] — fixes two defects
+in the verbose panels it introduced. The command-line composer added here is the foundation the
+deferred pause feature builds on.

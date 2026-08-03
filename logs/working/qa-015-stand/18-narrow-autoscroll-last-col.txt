@@ -1,0 +1,12 @@
+pgcenter: 2026-08-03 08:41:05  state [ok]: /tmp:5432 postgre
+    %cpu: 79.2 us,  2.0 sy,      activity: 14/50 conns,  0/0
+ MiB mem:   2970 total,    54  autovacuum:  0/4 workers/max,
+MiB swap:    486 total,    48  statements:   0 stmt/s, 0.000
+
+pid       ‹horizon_xacts  xact_age  query_age  change_age  q
+11553      527            00:10:02  00:10:02   00:10:02    s
+11548      527            00:10:02  00:10:02   00:10:02    s
+11550      527            00:10:02  00:10:02   00:10:02    b
+11549      527            00:10:02  00:10:02   00:10:02    b
+11547      527            00:10:02  00:10:02   00:10:02    b
+

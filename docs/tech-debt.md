@@ -7,6 +7,71 @@ Reviewed at the start of tech-spec planning to avoid worsening existing debt.
 
 ## Active Debt
 
+### [027] Messages printed after a dialog closes are never visible
+
+**Added:** 2026-08-03 (surfaced during feature: 015-feat-tui-papercuts, stand run)
+**Severity:** Medium — silent, and it hides honest error text
+**Area:** `top/dialog.go` (`dialogFinish`), `top/ui.go`
+
+`dialogFinish` writes an empty cmdline line and then the result message. `gocui.Update` enqueues
+each write from its own goroutine, so the empty one can land last and the message is never drawn.
+Every post-dialog message is affected — `Filters: ok`, `Refresh: ok`, the invalid-regexp error,
+`Do nothing. Operation canceled.` The side effects always apply, so the user sees the action work
+while being told nothing, and a genuine error message is indistinguishable from success.
+
+Confirmed byte-identical on `master`, so it predates 015. Its practical cost showed up there: one of
+the feature's three filter messages could not be verified on a live terminal and rests on a unit
+test instead. Fix is the "exactly one cmdline write per code path" rule from `patterns.md`, applied
+to `dialogFinish`.
+
+### [028] The verbose height-guard hint loses a race and never reaches a frame
+
+**Added:** 2026-08-03 (surfaced during feature: 015-feat-tui-papercuts, stand run)
+**Severity:** Low — cosmetic; the fallback itself works
+**Area:** `top/ui.go` (`layout`), `top/verbose.go`, `top/stat.go`
+
+Pressing `v` on a terminal too short for verbose mode triggers three cmdline writes in one keypress
+(the guard hint, the mode message, the first-tick `collecting...`), each through its own `g.Update`
+goroutine. `collecting...` wins every time, sampled at 0.25 s intervals across repeated toggles and
+with a 30 s refresh to rule out a stats tick. The latch works and the message is produced — it just
+never survives to a frame, so the user gets no explanation for why verbose did not expand.
+
+Same root cause as [027] and identical on `master`; 015 only moved the threshold from 13 rows to 12.
+
+### [029] Row values reach the terminal unsanitised
+
+**Added:** 2026-08-03 (surfaced during feature: 015-feat-tui-papercuts, security review)
+**Severity:** Low — needs a hostile object name to matter
+**Area:** `top/stat.go` (`printDataCell`)
+
+Column names and row values come from the server, and `printDataCell` writes values without an SGR
+wrapper, so escape sequences in a crafted database object name reach the terminal. 015 sanitises the
+**cmdline indicator** only, because the cmdline is a low-frequency persistent surface where
+`gocui.View.Clear()` does not reset the escape-interpreter state and corruption lasts the whole
+session; the stats table repaints every tick amid correct sequences and self-heals. The asymmetry is
+deliberate and recorded here so it stays a decision rather than an oversight.
+
+### [030] `profile.Test_profileLoop` is flaky
+
+**Added:** 2026-08-03 (surfaced during feature: 015-feat-tui-papercuts)
+**Severity:** Low — noise, but it erodes trust in a red run
+**Area:** `profile/`
+
+Fails intermittently with `canceling statement due to user request` and passes on an immediate
+re-run. Observed twice during 015 by two different agents, in a package the feature never touched.
+Unreliable failures train reviewers to re-run rather than investigate, which is how a real
+regression gets waved through.
+
+### [031] `.test_coverage.txt` is not gitignored
+
+**Added:** 2026-08-03 (surfaced during feature: 015-feat-tui-papercuts)
+**Severity:** Trivial
+**Area:** repo root, `Makefile`
+
+`make test` writes `.test_coverage.txt` and deletes it on success only — a failing run leaves it
+behind, where `git add -A` will happily stage it. Add it to `.gitignore`.
+
+
 ### [022] Stats descriptions in `internal/stat/help.go` are dead code, and stale on top of it
 
 **Added:** 2026-07-25 (surfaced during feature: 013-feat-activity-xmin-horizon)

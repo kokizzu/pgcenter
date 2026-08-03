@@ -1,0 +1,116 @@
+{
+  "validator": "dev-reality-checker",
+  "feature_base": "docs/features/015-feat-tui-papercuts/015-feat-tui-papercuts",
+  "tasks_checked": ["04", "05", "06"],
+  "status": "changes_required",
+  "note": "Tasks 05 and 06 were rewritten concurrently during this validation (mtimes 22:00:58 and 21:57:26, after the first read). All findings below describe the CURRENT files, re-verified after the edits. Already fixed by those edits and therefore NOT listed: task 06's 'five test call sites' in step 7 and its missing app.setup() seeding anchor; task 05's undeclared dependency on task 03 and the duplicated filter predicate (now depends_on: [\"03\"] plus a 'call isFilterActive, no private copy' acceptance criterion). Task 04 (mtime 21:47:36) was stable throughout.",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "feasibility",
+      "task": "05",
+      "issue": "The acceptance criterion (line 188-189) and verification step (line 273) 'grep -rn \"printCmdline(\" top/ --include=*.go | wc -l -> 45 (44 calls + definition)' is correct on today's tree (verified: 45 lines, definition at top/ui.go:207) but cannot hold when it is actually evaluated. (a) Task 03 — now explicitly declared in task 05's depends_on, wave 1 — adds a clearFilters handler that prints exactly one message via printCmdline(g, \"%s\", msg) in top/config_view.go -> 46. (b) Task 05's own mandated new file top/ui_test.go contains Test_printCmdlineNilGui, which calls both writers with g == nil; --include=*.go matches test files -> 47+. The stated premise '44 existing call sites' (also repeated at lines 40, 91, 214) is stale by one after wave 1. An executor chasing the literal number can only 'fix' it by deleting calls.",
+      "fix": "Restate the criterion as an invariant, not a magic number: `git diff --stat` shows no change in any file other than top/ui.go, top/top.go, top/dialog.go, top/ui_test.go, and `git diff -U0 -- top/ | grep '^[-+].*printCmdline('` shows no removed/changed existing call site. If a count is kept, use `grep -rn \"printCmdline(\" top/ --include=*.go --exclude=*_test.go | wc -l` and expect 46 after task 03 (45 calls + definition)."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": "05",
+      "issue": "Leftover from the isFilterActive rewrite: the Test_filterToken anchor (line 138-140) and the 'Слабый предикат' edge case (line 323) still frame the predicate choice as 'implement the strong form, not isFilterRequired', without pointing at isFilterActive, which the new acceptance criterion (line 180-181) now makes mandatory. An implementer reading only the TDD Anchor could still write a private copy.",
+      "fix": "Reword the anchor to 'ok == false — обеспечивается вызовом isFilterActive (Task 3); isFilterRequired (top/stat.go:1145) слабее и не годится', so the anchor and the acceptance criterion say the same thing."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": "06",
+      "issue": "Stale count surviving the rewrite: Details (line 186) still says '5 literal renderSysstat( call sites need the new argument', while step 7 (line 67) and Context Files (line 131) now correctly say four and list them (:59, :150, :284, :285). Verified with grep: exactly 4 call sites in top/stat_test.go (Test_renderSysstat_compact:59, verboseSysstatLines:150, Test_renderSysstat_compactUnchanged:284,285). The stale sentence's own enumeration ('one + one + two') also sums to 4 — the '5' most likely leaked from 'the verboseSysstatLines helper which serves five verbose tests'.",
+      "fix": "In Details, change '5 literal renderSysstat( call sites' to '4', matching lines 67 and 131. Total signature-touched sites: 2 definitions (printSysstat top/stat.go:258, renderSysstat :268) + 2 production calls (printStat -> printSysstat :175, printSysstat -> renderSysstat :259) + 4 test calls."
+    },
+    {
+      "severity": "minor",
+      "category": "hallucination",
+      "task": "06",
+      "issue": "The rationale for why view.View.Refresh cannot be read back misstates the actual collectStat condition. The task says collectStat 'treats any non-zero Refresh on an incoming view as \"the interval changed\"' and that keeping Refresh populated 'would make every later view update look like a refresh change'. The real condition (top/stat.go:93) is `if refresh != v.Refresh && v.Refresh > 0` — it requires a DIFFERENCE, so a permanently populated Refresh equal to the collector's current interval falls through normally and skips nothing. The branch-order claim itself is correct and verified: refresh -> ShowExtra -> Verbose -> CollectExtra -> unconditional Reset, with the load-bearing ordering documented in-code at top/stat.go:86-96.",
+      "fix": "Replace the rationale with the accurate one: Refresh is zeroed right after each viewCh send (top/ui.go:86, top/config_view.go:456), and config.view is persisted per-view by viewSwitchHandler (top/config_view.go:241) — so a populated Refresh would be stored per view and a screen switch would load another view's stored 0, silently losing the displayed value. Keep the 'branch order is load-bearing, do not disturb the zeroing' instruction as is."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": "06",
+      "issue": "Both greps in Verification Steps do not work as written. `grep -rn \"time.Second\" top/ui.go top/top.go` will still match top/ui.go:57 (`e.check(1*time.Second, 5)` — error-rate window) and the 2-second cmdline timer (today top/ui.go:226; task 05 moves it into a g.Update closure but keeps the literal), so 'shows no leftover hardcoded default interval' has no pass/fail reading. `grep -n \"refresh.String()\" top/` without -r fails with 'top/: Is a directory' (exit 2).",
+      "fix": "Use targeted checks: `grep -n 'view.Refresh = ' top/ui.go` must show `= defaultRefresh` (not `time.Second`), and `grep -rn 'refresh.String()\\|Refresh.String()' top/ --include=*.go` (with -r) must be empty."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": "06",
+      "issue": "The invalid-input anchor for Test_changeRefresh ('inputs \\\"\\\", \\\"a\\\", \\\"0.5\\\", \\\"-1\\\", \\\"0\\\", \\\"301\\\" leave config.refresh untouched') is asserted against a bare newConfig(), where config.refresh is the zero value. 'Untouched' is then indistinguishable from 'written 0', so an implementation that assigns config.refresh = 0 on the failure path passes. The existing test already solves this for the courier field by re-seeding `config.view.Refresh = 1 * time.Second` before every case (top/config_view_test.go:694).",
+      "fix": "Pre-seed a distinctive non-zero value before each invalid case (e.g. `config.refresh = 7 * time.Second`) and assert it equals 7*time.Second afterwards, mirroring the existing view.Refresh precedent in the same subtest."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": "04",
+      "issue": "scrollOffsetFor has no defined return value for the case where NO offset admits the sort column. visibleColumns returns an empty window (first=1, last=0) whenever ncols <= 1 (top/stat.go:766-768) and can also return last < first for every offset when scrollBudget is exhausted by the frozen column plus markers on a very narrow terminal. The rightward probe is specified only as 'walk offsets rightwards ... and take the first one whose window admits the column' with the bound ncols-1 — the fall-through result is unspecified, and the empty-window case is only warned about for the 'already visible' comparison.",
+      "fix": "Add an explicit rule to step 4 and to the acceptance criteria: if the probe exhausts its range without a window admitting orderKey, return the input offset unchanged (visibleColumns re-clamps it anyway). Add a subtest Test_scrollOffsetFor/window_never_admits with a termWidth smaller than colWidth(0)."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": "04",
+      "issue": "Internal tension between step 4 ('It must find the answer by calling visibleColumns — no independent window arithmetic') and the narrower acceptance criterion ('contains no independent marker-reservation arithmetic'). The specified left-edge behaviour ('the offset that puts it exactly at the left edge') is only reachable either by the shortcut offset = orderKey-1, which silently depends on the internal, undocumented invariant first == 1 + clamped (top/stat.go:828, 843), or by a probe walk. If a later change to visibleColumns breaks that invariant, the shortcut breaks with no failing test.",
+      "fix": "Specify one uniform algorithm for both directions: walk candidate offsets outward from the current clamped offset and return the first one whose visibleColumns window satisfies win.first <= orderKey <= win.last (with win.first <= win.last). That satisfies the strict wording, covers left and right symmetrically, and depends on no internal invariant."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": "04",
+      "issue": "Two anchors are weaker than they read. (1) Test_scrollOffsetFor/empty_result — with the pure signature (ncols, colsWidth, termWidth, offset, orderKey) 'zero data rows' is not representable at all; the case is indistinguishable from any other widths-only case and proves nothing. (2) Test_renderDbstat_autoScrollConsumesFlag asserts only that 'the sort column's header is present in the output' and the flag is false; without asserting the pre-state it can pass with a column that was already visible, and makeRenderConfig's col0..colN-1 names make Contains(\"col1\") match \"col10\" once ncols > 10.",
+      "fix": "(1) Move the empty-result guarantee to renderDbstat level with makeRenderResult(ncols, 0) and assert no panic plus a printed header. (2) Assert the concrete transition: at the initial offset the target header is ABSENT, after one renderDbstat config.scrollOffset equals the expected value AND the header is present; keep ncols <= 10 so substring matching is unambiguous."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": "05",
+      "issue": "Routing the dialog prompt through the composer prepends the filter token to the cmdline line, but dialogOpen still positions the editable view with g.SetView(\"dialog\", len(prompt)-1, 3, maxX-1, 5) (top/dialog.go:79), computed from the raw prompt only. With an active filter the input box will no longer start where the printed prompt ends — a visible misalignment introduced by task 05 and only fixed by task 07 (wave 3, dialogInputX0) while the stand check is task 08 (wave 4). Task 05 mentions dialog.go:79 as 'геометрия задачи 7' but never states that this task leaves the geometry temporarily wrong.",
+      "fix": "Add one line to the task's Edge cases: 'until task 07 lands, the dialog input x0 does not account for the prefix; a code reviewer must not treat that misalignment as a regression of this task'. Task 07 already declares depends_on: [\"01\", \"05\"], so the ordering is sound."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": "05",
+      "issue": "The task identifies a concrete trap — 'таймер на пустом сообщении: после правки условие должно смотреть на готовое сообщение, иначе printCmdline(g, \"%s\", \"\") взведёт таймер' (such calls do exist, e.g. top/menu.go:155,175,193,203 and top/config_view.go:156 pass a possibly empty view.Msg) — but no anchor covers it, because the arm/no-arm decision sits inside the writer, which the task itself declares unreachable from unit tests. The same applies to the 'prefix + single space, no trailing space when the message is dropped' rule at the writer level (only composeCmdline is covered).",
+      "fix": "Push the decision into the pure core so it is assertable, e.g. have the shared core compute (line string, arm bool) from (tokens, msg, width) and test arm == false for an empty formatted message; the gocui wrapper then only does Clear + Fprint + timer. This is the same 'pure core + thin wrapper' split the task already applies to composeCmdline."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": "05",
+      "issue": "Two line ranges drift from the tree (all other anchors verified exact). printStat is cited as top/stat.go:162-166 in Code files and as :159-164 in Implementation hints — the function is 157-253 and the printCmdline call is at :166. printHeaderCell is cited as :897-915 — it is 897-921. Also '9 вызовов в функциях showPgConfig / showPgLog / resetStat': the 9 count is exact, but 3 of them (top/pgconfig.go:72,79,85) are in editPgConfig, a separate helper (which likewise has no *config in scope, so the Decision 1 rationale stands).",
+      "fix": "Cite printStat as top/stat.go:157-253 (call at :166) consistently in both places, printHeaderCell as :897-921, and name editPgConfig alongside showPgConfig."
+    }
+  ],
+  "verified_claims": [
+    "task04: renderDbstat at top/stat.go:671-693; the visibleColumns call (:676) and `config.scrollOffset = win.clamped` (:683) are adjacent and the insertion point between the function opening and :676 is real and byte-preserving",
+    "task04: both reset sites exist as claimed — viewSwitchHandler `config.scrollOffset = 0` at top/config_view.go:243 (func 240-245), switchViewToProcPidStat `app.config.scrollOffset = 0` at :257 with the `if !app.db.Local` early-return guard at :259; a flag reset placed between them is observable without a live PostgreSQL, exactly as Test_switchViewToProcPidStatResetsScrollOffset (config_view_test.go:219) already proves",
+    "task04: Test_scrollOrthogonalToSort (config_view_test.go:145-193) asserts `assert.Equal(t, 3, config.scrollOffset)` after orderKeyLeft/orderKeyRight — setting a bool flag instead of touching the offset keeps it green; the sort handlers (:22-32, :35-45) send on an unbuffered viewCh, and the test's drain goroutine pattern is required for any new handler test",
+    "task04: config struct ends at scrollOffset (config.go:19) / verbose (:20); visibleColumns at stat.go:751; firstTickHint at :149; printDbstat error early-return at :648-655 (never reaches renderDbstat); alignViewToResult at :635-643; makeRenderConfig stat_test.go:830, makeRenderResult :849, Test_visibleColumns :599",
+    "task05: printCmdline defined at top/ui.go:207; 45 grep lines today = 44 call sites + definition (arithmetic correct for the current tree only — see the critical finding); 9 of the calls are in functions with no *config in scope (pgconfig.go x6, pglog.go x2, reset.go x1)",
+    "task05 (post-edit): depends_on is now [\"03\"] and the acceptance criteria require calling task 03's isFilterActive instead of a private predicate copy — consistent with task 03's own statement that the helper serves both tasks, and with the 'config_view.go is read-only for this task' rule (same Go package, so calling by name is legal)",
+    "task05: newApp is called from top/top_test.go:14 and :22, so setting the ambient in newApp would leak one test's config into all later tests — the RunMain placement (top.go:21, right after newApp) is justified",
+    "task05: the dialog prompt is written raw at top/dialog.go:92 (`fmt.Fprint(p, prompt)`), dialogOpen at :46, dialog SetView at :79, printCmdline(g, \"\") in dialogFinish at :115",
+    "task05: gocui v0.5.0 View.Clear() (view.go:391-398) resets tainted/lines/viewLines/readOffset and the cells, but does NOT reset v.ei, the escape interpreter — the claim holds",
+    "task05: mainLoop (ui.go:13-69) creates a new Gui at :19 on every iteration and never closes the old one; gocui.Gui.Update (gui.go:311-313) spawns a goroutine writing into a 20-slot buffered userEvents channel (gui.go:83) that nobody drains after MainLoop returns — the generation guard is a real need, and the timer goroutine leaks rather than blocks",
+    "task05: printStat (stat.go:166) is the only printCmdline call from the doWork goroutine (ui.go:94); alignViewToResult (stat.go:640) is the only writer of view.Cols; printHeaderCell's filter predicate at stat.go:902 is `config.view.Filters[i] != nil && config.view.Filters[i].String() != \"\"`, strictly stronger than isFilterRequired (:1145); no package-level `var` exists in top/*.go today; top/ui_test.go does not exist; layout() guards maxX == 0 at ui.go:113",
+    "task06: view.View.Refresh is zeroed on the next line by both writers — doWork (ui.go:82-86) and changeRefresh (config_view.go:454-456); collectStat's branch order (refresh -> ShowExtra -> Verbose -> CollectExtra -> Reset) is real and documented at stat.go:86-96",
+    "task06: app.setup() sets app.config.view = app.config.views[\"activity\"] at top.go:69 and runs from RunMain (top.go:24) before mainLoop, i.e. before any goroutine exists — the seeding placement is race-free; doWork runs in a separate goroutine, so the 'do not read config.refresh there' instruction is correct; the printSysstat call site (stat.go:175) is inside printStat's app.ui.Update closure, and changeRefresh is reached from dialogFinish (dialog.go:147), so writer and reader are both on the gocui goroutine",
+    "task06: (300*time.Second).String() == \"5m0s\" and (60*time.Second).String() == \"1m0s\" — the %ds format test at 1/60/300 does discriminate against Duration.String(); the existing line-1 regex is a fully anchored match at stat_test.go:65-67; top/config.go and top/top.go have no time import today",
+    "baseline: `go test ./top/... -count=1` passes on the current tree (8.1s), so the 'red for the right reason' TDD step is meaningful for all three tasks"
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 48,
+    "issues_found": 12,
+    "by_severity": {"critical": 1, "major": 1, "minor": 10}
+  }
+}

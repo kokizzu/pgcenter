@@ -1,0 +1,116 @@
+{
+  "validator": "dev-reality-checker",
+  "feature_base": "docs/features/015-feat-tui-papercuts/015-feat-tui-papercuts",
+  "tasks_checked": ["01", "02", "03"],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": "01",
+      "issue": "Context Files says `layout()` occupies top/ui.go lines 103-183. The function actually spans 103-204 (line 183 is only the end of the height-guard hint block; the `extra` view SetView block follows at 185-203). The description of what layout() does is correct.",
+      "fix": "Change the anchor to `top/ui.go:103-204`."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": "01",
+      "issue": "The height-guard's stated intent is off by one, and step 3 asks the implementer to rewrite exactly that doc comment. Verified empirically with the patched function: at the new threshold maxY=12, dbstat is SetView(-1, 9, maxX, 11) => content rows 10..10, i.e. ONE content row, which the table header consumes — zero data rows. The comment `dbstatY0 + 1 (header) + 1 (data row) <= maxY - 1` would require maxY >= dbstatY0+4 = 13. This is pre-existing (today at maxY=13 with dbstatY0=10 the same single content row appears) and is NOT introduced by the fix, but the task tells the implementer to rewrite the comment and forbids touching the guard, so the false claim risks being restated as fact — or worse, 'fixed' in the guard, which the task explicitly prohibits.",
+      "fix": "In the rewritten doc comment, state the guard as it actually is (`dbstatY0 + 2 <= maxY - 1`, which leaves the header row and no data row at the threshold) rather than repeating '+1 data row'. Do not change the expression. Task 08's stand check only asserts that verbose *turns on* at `-y 12`, so no cross-task conflict — but note the expectation so nobody reports 'empty table at 12 rows' as a Task 01 regression."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": "01",
+      "issue": "Step 3 names only the two doc comments (`layout.go:21-32`, `layout_test.go:9-18`) as carrying stale numbers, but the per-case inline comments inside the table also encode the old arithmetic: `layout_test.go:54` ('dbstatY0=10 + 2 <= maxY-1 => maxY>=13') and `:59` ('maxY=12 is one short of the threshold'). Both become false after the change.",
+      "fix": "Add `top/layout_test.go:54` and `:59` to the list of comments to update in step 3 / the Details Files block."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": "01",
+      "issue": "Project knowledge documents the old threshold: `.claude/skills/project-knowledge/architecture.md:105` states 'threshold `maxY >= 13`'. It goes stale the moment this task lands, but the AC restricts the diff to two files and neither Post-completion nor the tech-spec's Consumer-impact section names the doc update.",
+      "fix": "Either add the architecture.md line to Post-completion as an explicit follow-up, or record it in the decisions log so /done picks it up at finalization. Do not silently leave it — architecture.md is the file every later task reads as ground truth."
+    },
+    {
+      "severity": "major",
+      "category": "tdd",
+      "task": "02",
+      "issue": "Two TDD anchors can pass with the behaviour only partially implemented. `Test_renderPgstatVerbose_boldOnValues` is specified as 'each of the five verbose pgstat rows contains \\033[37;1m and \\033[0m' — that is satisfied by bolding ONE value per row, while AC #1 requires every numeric value site (the databases row alone has four: size, DatabasesCount, growth, hit; replication has six). `Test_renderSysstatVerbose_boldOnValues` has the same shape. The paired 'stripped output equals today's golden' assertion catches over-bolding and width drift, but not under-bolding.",
+      "fix": "Make the anchors count spans: assert `strings.Count(row, \"\\033[37;1m\")` equals the expected number of spans per row (workload 7, databases 4, workers 3, replication 6 in the all-valid state, bgwr/ckpt 4) and that opens == closes. That is what actually locks 'every value is bolded', and it fails RED on a partial implementation."
+    },
+    {
+      "severity": "minor",
+      "category": "hallucination",
+      "task": "02",
+      "issue": "Description says 'The value side gains 12 bytes the sentinel does not.' Measured: `\\033[37;1m` is 7 bytes and `\\033[0m` is 4 — 11 bytes, not 12. Harmless for the implementation (the fix strips escapes rather than counting them), but the number is wrong and an implementer could use it to hand-adjust an offset instead of stripping.",
+      "fix": "Say 11 bytes, or better, drop the number entirely — the repair must strip escapes, never offset by a constant."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": "02",
+      "issue": "AC bullet 2 lists `stat.go:337, 357, 382, 594` as 'bare naLiteral sites' that must stay plain. Lines 337 and 357 are mixed: they carry both the `naLiteral` args (plain) AND `pretty.ReserveWidth(activeDiskCount(...), 2)` / `activeNetCount(...)`, the degraded-branch device count that the task elsewhere (What-to-do bullet 2, Edge cases) explicitly requires to be BOLD. Read only against the AC, an implementer would leave those two lines entirely plain and violate the enumeration.",
+      "fix": "Reword the AC to 'no `naLiteral`/`naReserve` *argument* is wrapped (the `naLiteral` args on :337/:357 stay plain while the device count on the same lines is bolded)'."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": "03",
+      "issue": "`Test_clearFilters_noActiveFilters`'s stated detector for 'nothing sent on viewCh' does not work as described. `config.viewCh` is unbuffered (`top/config.go:29`) with no receiver armed in that subcase, so an erroneous unconditional send blocks the handler *inside* `fn(nil, nil)` forever — the test never reaches the non-blocking `select`/`default`, and `make test` hangs until the 10-minute go-test panic instead of failing. The task acknowledges this in Verification Steps ('или повиснет по таймауту') but the anchor is written as if the select is the assertion.",
+      "fix": "Run the handler in a goroutine and assert with a bounded select: `done := make(chan error, 1); go func(){ done <- fn(nil, nil) }(); select { case err := <-done: assert.NoError(t, err); case v := <-config.viewCh: t.Fatalf(\"unexpected send on viewCh: %v\", v); case <-time.After(time.Second): t.Fatal(\"handler blocked — it sent on viewCh\") }`. `time` is already imported in config_view_test.go. That turns a 10-minute hang into a one-second failure."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": "03",
+      "issue": "Three line anchors drift by one. `printCmdline` is cited as `top/ui.go:206-234` (actual: comment 206, func 207-235) and its nil-Gui guard as `:207-210` (actual `if g == nil { return }` at 209-211). `viewCh` unbuffered is cited as `config.go:28` (actual `viewCh: make(chan view.View)` at line 29). `toggleIdleConns` is cited as 411-435 (func at 411, next func at 438). Every behavioural claim behind these anchors is correct — printCmdline does return silently on a nil Gui, and viewCh is unbuffered.",
+      "fix": "Retarget to `top/ui.go:207-235` / `:209-211` and `top/config.go:29`. Cosmetic, but these are the anchors an implementer greps for."
+    }
+  ],
+  "verified_claims": {
+    "task_01": [
+      "topBandLayout at top/layout.go:33-62; `dbstatY0 = tallest + 1` is exactly line 50; doc comment 21-32 — all confirmed.",
+      "Compact branch really does tie the table to the cmdline: compactDbstatY0=4 == tallest(4) == compactCmdlineY1-1, and compactCmdlineY0=3 == tallest-1. The claimed rule `dbstatY0 = cmdlineY1 - 1` holds for compact and is violated only by verbose.",
+      "Verbose arithmetic verified empirically by running the patched function in a scratch module: dbstatY0 9 (was 10); sysstatY1 7, pgstatY1 9, cmdlineY0 8, cmdlineY1 10 unchanged; compact literals 4/4/3/5/4 byte-identical.",
+      "Threshold verified: with dbstatY0=9 the unchanged guard `dbstatY0+2 > maxY-1` expands at maxY=12 and falls back at maxY=11 (was 13/12). Empirically confirmed at maxY 0/5/11/12/13/50.",
+      "Blank row confirmed: today cmdline content row = cmdlineY1-1 = 9 and dbstat first content row = dbstatY0+1 = 11, so screen row 10 is drawn by nobody. After the fix dbstat first content row = 10 = cmdline content row + 1.",
+      "No content overlap after the change: pgstat content 0..8, dbstat top FRAME row 9 (Frame=false at top/ui.go:169-171), dbstat content from 10. This makes verbose structurally identical to compact, where pgstatY1 == dbstatY0 == 4 == the cmdline content row already.",
+      "Exactly three of six table cases change (verbose, boundary-expands, boundary-fallback); compact, height-guard, verbose-zero-maxY are maxY-independent of dbstatY0 and stay green. Case names and layout_test.go:9-18 / :16 / :18 anchors all match.",
+      "boundary-fallback at maxY=11 does pass on current code (today maxY<=12 falls back), exactly as the task warns — it is only meaningful paired with boundary-expands.",
+      "layout() (top/ui.go:119) is the only consumer of topBandLayout in the repo; nothing else reads dbstatY0. Baseline `go test ./top/ -run Test_topBandLayout` is green."
+    ],
+    "task_02": [
+      "All six base-row bold sites exist at the cited lines: stat.go:280, :288, :296, :472, :481, :489.",
+      "naInt at :519-524 with the sentinel branch at :521 and the value branch `pretty.ReserveWidth(int(v), width)` at :523 — the 'bold inside the value branch' instruction is placeable exactly as written, and all seven workload call sites (:533-535) stay untouched.",
+      "renderSysstatVerbose :330-388 and renderPgstatVerbose :528-607 confirmed. Every enumerated value site verified line by line: :337, :343-348, :357, :363-368, :377 (identifiers), :378, :382; :541, :543, :545, :551, :553, :556, :562-564, :570-580, :582-585, :594, :596-598, :601.",
+      "The named locals really are default-naReserve-then-overwritten-in-an-if: size/growth (:541 -> :543/:545), hit (:551 -> :553), lag/retain/backlog (:570-:580), writeMs/syncMs/maxw (:594 -> :596-598 inside `if hp`). Bolding inside the if-branches leaves every sentinel plain automatically, as claimed.",
+      "Filesystem identifier fields are on their own argument line (:377 device/mountpoint/fstype) separate from the values (:378) — 'identifiers are not values' is trivially implementable.",
+      "Decision 9 exists at tech-spec:226-249 and matches the task's rules; code-research §16 at :1386-1532; tech-debt [012] at docs/tech-debt.md:278-290; user-spec AC 'значения verbose-секций ... выделены жирным' is exactly line 284.",
+      "Test_renderPgstat_verboseNAWidthStatic exists at :406-509 and does compare `strings.Index` byte offsets. Group (a) at :499-502 compares two VALUE samples (rowsA vs rowsB) — both gain the same escapes, so it survives, as claimed. Groups (b) at :429-432, :439-442 and :504-507 compare value vs n/a and shift by 11 bytes — they break, as claimed.",
+      "ansiEscape at stat_test.go:939 and visibleRuneLen at :941-945 exist; visibleRuneLen returns a rune COUNT, so the task is right that it cannot be reused for offsets and a thin local wrapper over ansiEscape is needed.",
+      "Every breaking/surviving assertion the task enumerates checks out: :229 ('0% max util' — the counter-case device IS active so it takes the value branch and the reset lands between the digit and the %), :427-428, :437-438 break; :218-219, :227-228, :251-252, :267, :397 and all line-count assertions survive. Goldens at :171-173, :194-196, :248-250, :336-350, :378-395 confirmed present with the cited content; :336-338 is indeed the pure-n/a workload row.",
+      "No other test file touches renderSysstatVerbose/renderPgstatVerbose/verboseSysstatLines — the blast radius really is top/stat_test.go."
+    ],
+    "task_03": [
+      "setFilter at top/config_view.go:116-131 keys on view.OrderKey for BOTH paths: `delete(view.Filters, view.OrderKey)` at :119 (clear) and `view.Filters[view.OrderKey] = re` at :130 (set). The unconditional delete + unconditional success message is exactly as described.",
+      "The Filters map header IS shared with the stored view: viewSwitchHandler (:240-245) stores by value at :241 (`config.views[config.view.Name] = config.view`), and view.View.Filters is a map (internal/view/view.go:24, initialized non-nil at :49 and per-view). In-place delete is therefore required and Test_clearFilters_inPlaceVisibleThroughStoredView is a real regression test.",
+      "Test_setFilter is at config_view_test.go:333-351, runs its table sequentially against one config.view with OrderKey=0, and the `\"\\n\"` row (:340) is precisely the one that changes: the preceding `\"\"` row (:339) already deleted the key, so `\"\\n\"` hits the no-filter path. `\"example\"`, `\"\"` and `\"[0-\"` are unaffected. No other test or source file asserts 'Filters: regular expression cleared'.",
+      "printCmdline does return silently on a nil Gui (top/ui.go:209-211), so a message composed inside a gocui handler is genuinely unobservable from a unit test — the pure-function split is justified, not decorative.",
+      "printHeaderCell at stat.go:897-921 with the `*` predicate at :902 exactly as quoted: `config.view.Filters[i] != nil && config.view.Filters[i].String() != \"\"`.",
+      "keybindings.go keys table is 18-80 with `{\"sysstat\", '/', dialogOpen(app, dialogFilter)}` at line 60; no existing binding uses '\\\\'. help.go helpTemplate is 10-47 with the '/' line at 21; descriptions in the continuation lines do start at column 23. No test asserts helpTemplate content or the keybinding table, so adding rows breaks nothing.",
+      "The gocui reasoning is correct against the vendored source (jroimartin/gocui v0.5.0): matchView returns true unconditionally for an empty view name (keybinding.go:36-41), execKeybindings runs EVERY match (gui.go:622-636), and onKey skips Editor.Edit when anything matched (gui.go:597-602). A global binding would indeed fire behind an open dialog and make '\\' untypable in a filter regexp.",
+      "dialogFinish at dialog.go:113+ calls setFilter at :127 exactly; switchViewTo's variable-text printCmdline pattern is at config_view.go:156; the 'printCmdline exactly once per path' convention comment is at :288-290; switchSortOrder 105-113 and toggleIdleConns at 411 are usable handler templates.",
+      "config_view_test.go imports fmt/gocui/postgres/testify/sync/testing/time but not regexp — the task is right that regexp must be added. The drain-goroutine template is at Test_scrollOrthogonalToSort:147-193 with the goroutine at :158-163, both exact.",
+      "User-spec anchors confirmed: the three message texts at :237-241 and the acceptance criteria at :271-276, character-for-character identical to the task's table."
+    ]
+  },
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 71,
+    "issues_found": 9,
+    "critical": 0,
+    "major": 1,
+    "minor": 8
+  }
+}

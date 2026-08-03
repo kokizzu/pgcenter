@@ -1,0 +1,11 @@
+pgcenter: 2026-08-03 08:43:03  state [ok]: /tmp:5432 postgre
+    %cpu:  5.9 us,  2.0 sy,      activity: 15/50 conns,  0/0
+ MiB mem:   2970 total,    52  autovacuum:  0/4 workers/max,
+MiB swap:    486 total,    48  statements:   0 stmt/s, 0.000
+[F:pid]
+*pid      leader    cl_addr   cl_port   datname   usename
+17605     17605               -1        ppem      postgres
+17414     17414               -1        ppem      postgres
+11553     11553               -1        postgres  postgres
+11550     11550               -1        ppem      postgres
+

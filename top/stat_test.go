@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func Test_formatInfoString(t *testing.T) {
@@ -56,14 +57,14 @@ func Test_renderSysstat_compact(t *testing.T) {
 	}}
 
 	var buf bytes.Buffer
-	err := renderSysstat(&buf, s, false, true, "")
+	err := renderSysstat(&buf, s, false, true, "", 5*time.Second)
 	assert.NoError(t, err)
 
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
 	if assert.Len(t, lines, 4, "compact sysstat must be exactly 4 lines") {
-		// line1: dynamic timestamp, fixed load-average format.
+		// line1: dynamic timestamp, fixed refresh and load-average format.
 		assert.Regexp(t,
-			`^pgcenter: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}, load average: 1\.23, 0\.45, 6\.78$`,
+			`^pgcenter: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}, refresh: \d+s, load average: 1\.23, 0\.45, 6\.78$`,
 			lines[0])
 		// line2..4: byte-identical golden, including ANSI codes.
 		assert.Equal(t,
@@ -75,6 +76,28 @@ func Test_renderSysstat_compact(t *testing.T) {
 		assert.Equal(t,
 			"MiB swap: \033[37;1m   500\033[0m total, \033[37;1m   400\033[0m free, \033[37;1m   100\033[0m used, \033[37;1m     5/7\033[0m dirty/writeback",
 			lines[3])
+	}
+}
+
+// Test_renderSysstat_refreshFormat pins the refresh interval on line 1 to whole seconds. The
+// interval must be formatted explicitly as "%ds": time.Duration's own String() renders 60s as
+// "1m0s" and 300s as "5m0s", which is not what the header must show.
+func Test_renderSysstat_refreshFormat(t *testing.T) {
+	testcases := []struct {
+		refresh time.Duration
+		want    string
+	}{
+		{refresh: 1 * time.Second, want: "refresh: 1s,"},
+		{refresh: 60 * time.Second, want: "refresh: 60s,"},
+		{refresh: 300 * time.Second, want: "refresh: 300s,"},
+	}
+
+	for _, tc := range testcases {
+		var buf bytes.Buffer
+		assert.NoError(t, renderSysstat(&buf, stat.Stat{}, false, true, "", tc.refresh))
+
+		line1 := strings.SplitN(buf.String(), "\n", 2)[0]
+		assert.Contains(t, line1, tc.want)
 	}
 }
 
@@ -143,11 +166,30 @@ func Test_formatError(t *testing.T) {
 	}
 }
 
+// boldOpen/boldReset are the SGR pair the compact summary rows wrap their values in
+// (top/stat.go:280 etc.). The verbose rows must use the very same pair, so the tests spell it out
+// literally instead of reusing the production helper.
+const boldOpen, boldReset = "\033[37;1m", "\033[0m"
+
+// boldSpanRe matches one complete bold span and captures what it wraps, so a test can inspect
+// every value the renderer marked as bold (and prove no sentinel/identifier is among them).
+var boldSpanRe = regexp.MustCompile("\033\\[37;1m(.*?)\033\\[0m")
+
+// boldSpans returns the contents of every bold span on a rendered line.
+func boldSpans(line string) []string {
+	m := boldSpanRe.FindAllStringSubmatch(line, -1)
+	spans := make([]string, 0, len(m))
+	for _, s := range m {
+		spans = append(spans, s[1])
+	}
+	return spans
+}
+
 // verboseLines renders sysstat in verbose mode against a buffer and returns the rows split by line.
 func verboseSysstatLines(t *testing.T, s stat.Stat, local bool, dataDir string) []string {
 	t.Helper()
 	var buf bytes.Buffer
-	assert.NoError(t, renderSysstat(&buf, s, true, local, dataDir))
+	assert.NoError(t, renderSysstat(&buf, s, true, local, dataDir, time.Second))
 	return strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
 }
 
@@ -167,9 +209,10 @@ func Test_renderSysstat_verboseIostatMaxUtil(t *testing.T) {
 	// 4 compact + 3 verbose
 	if assert.Len(t, lines, 7) {
 		// Full-line golden locks the exact reserve-width layout and field order: 2 active devices
-		// (sdb skipped), max util from sdc (80), sdc's rates.
+		// (sdb skipped), max util from sdc (80), sdc's rates. Every value carries the base rows'
+		// bold pair; the '%' of "max util" is a unit and stays outside the span.
 		assert.Equal(t,
-			"  iostat:  2 devices,  80% max util, 1135 rMB/s, 34152 r/s, 1546 wMB/s, 17852 w/s",
+			"  iostat: \033[37;1m 2\033[0m devices, \033[37;1m 80\033[0m% max util, \033[37;1m1135 rMB/s\033[0m, \033[37;1m34152\033[0m r/s, \033[37;1m1546 wMB/s\033[0m, \033[37;1m17852\033[0m w/s",
 			lines[4])
 	}
 }
@@ -191,8 +234,9 @@ func Test_renderSysstat_verboseNicstatConversion(t *testing.T) {
 	lines := verboseSysstatLines(t, s, true, "")
 	if assert.Len(t, lines, 7) {
 		// Full-line golden: /1024/128 parity (4345/6543), err=Rerrs+Terrs=3451, coll=Tcolls=0.
+		// err/coll is a composite value and is wrapped as ONE bold span.
 		assert.Equal(t,
-			" nicstat:  1 devices,  60% max util, 4345 rMbps, 6543 wMbps, 3451/0 err/coll",
+			" nicstat: \033[37;1m 1\033[0m devices, \033[37;1m 60\033[0m% max util, \033[37;1m4345 rMbps\033[0m, \033[37;1m6543 wMbps\033[0m, \033[37;1m3451/0\033[0m err/coll",
 			lines[5])
 	}
 }
@@ -217,6 +261,17 @@ func Test_renderSysstat_verboseFirstTickNA(t *testing.T) {
 	if assert.Len(t, lines, 7) {
 		assert.Contains(t, lines[4], "n/a")
 		assert.Contains(t, lines[5], "n/a")
+		// The degraded branch still prints a real device count, so that count IS bold while the
+		// n/a arguments beside it stay plain — the one place where "degraded branch" and "plain"
+		// come apart (Decision 9: bold means "there is a real number here").
+		assert.Contains(t, lines[4], boldOpen+" 1"+boldReset+" devices")
+		assert.Contains(t, lines[5], boldOpen+" 1"+boldReset+" devices")
+		for _, row := range []string{lines[4], lines[5]} {
+			assert.Equal(t, 1, strings.Count(row, boldOpen), "degraded row bolds the device count only: %q", row)
+			for _, span := range boldSpans(row) {
+				assert.NotContains(t, span, naLiteral, "n/a sentinel must not be wrapped in bold: %q", row)
+			}
+		}
 	}
 
 	// Counter-case: genuinely idle device, real zero deltas, flag NOT set -> 0, not n/a.
@@ -226,7 +281,9 @@ func Test_renderSysstat_verboseFirstTickNA(t *testing.T) {
 	if assert.Len(t, lines, 7) {
 		assert.NotContains(t, lines[4], "n/a")
 		assert.NotContains(t, lines[5], "n/a")
-		assert.Contains(t, lines[4], "0% max util")
+		// The utilization value is bold, so the reset sits between the digit and the '%' — the
+		// assertion is about what the user SEES, hence the SGR-stripped line.
+		assert.Contains(t, stripSGR(lines[4]), "0% max util")
 	}
 }
 
@@ -244,9 +301,10 @@ func Test_renderSysstat_verboseFilesystMounted10(t *testing.T) {
 	if assert.Len(t, lines, 7) {
 		// Full-line golden: mounted truncated to first 10 runes of "/var/lib/postgresql/data".
 		// use-% mirrors printFsstats' %.0f of Pused exactly (74.3 -> 74, NOT Ceil's 75) — the
-		// verbose row must agree with the full fsstat panel for the same filesystem.
+		// verbose row must agree with the full fsstat panel for the same filesystem. Only the three
+		// numbers are bold — device, mounted and fstype are identifiers and stay plain.
 		assert.Equal(t,
-			"filesyst: /dev/nvme0n1p2 on /var/lib/p (ext4), 1.0K size, 512B used,  74% use",
+			"filesyst: /dev/nvme0n1p2 on /var/lib/p (ext4), \033[37;1m1.0K\033[0m size, \033[37;1m512B\033[0m used, \033[37;1m 74\033[0m% use",
 			lines[6])
 		assert.NotContains(t, lines[6], "/var/lib/postgresql")
 		assert.NotContains(t, lines[6], "75")
@@ -268,6 +326,104 @@ func Test_renderSysstat_verboseFilesystNA(t *testing.T) {
 	}
 }
 
+// verboseSysstatBoldFixture returns a stat with one active disk, one active interface and one
+// filesystem matching "/data", so all three verbose rows take their VALUE branch.
+func verboseSysstatBoldFixture() stat.Stat {
+	return stat.Stat{System: stat.System{
+		Diskstats: stat.Diskstats{
+			{Device: "sda", Completed: 100, Util: 80, Rsectors: 1135, Wsectors: 1546, Rcompleted: 34152, Wcompleted: 17852},
+		},
+		Netdevs: stat.Netdevs{
+			{Ifname: "eth0", Packets: 10, Utilization: 60,
+				Rbytes: 569425920, Tbytes: 857604096, Rerrs: 3000, Terrs: 451, Tcolls: 0},
+		},
+		Fsstats: stat.Fsstats{
+			{Mount: stat.Mount{Device: "/dev/sda1", Mountpoint: "/data", Fstype: "ext4"},
+				Size: 1024, Used: 512, Pused: 74.3},
+		},
+	}}
+}
+
+// Test_renderSysstatVerbose_boldOnValues locks the bold convention on the three verbose system
+// rows: every numeric value carries the base rows' \033[37;1m…\033[0m pair. The spans are COUNTED
+// per row against the exact expected number — asserting that a row merely contains an escape would
+// pass with one value bolded and the rest plain. The visible text (escapes stripped) must stay
+// byte-identical to the pre-bold golden: SGR sequences are zero-width.
+func Test_renderSysstatVerbose_boldOnValues(t *testing.T) {
+	lines := verboseSysstatLines(t, verboseSysstatBoldFixture(), false, "/data")
+
+	if !assert.Len(t, lines, 7) {
+		return
+	}
+
+	testcases := []struct {
+		row     int
+		spans   int // number of bold value spans expected on the row
+		visible string
+	}{
+		// iostat: device count, max util, two rates, two completed counters.
+		{row: 4, spans: 6, visible: "  iostat:  1 devices,  80% max util, 1135 rMB/s, 34152 r/s, 1546 wMB/s, 17852 w/s"},
+		// nicstat: device count, max util, two rates, err/coll as ONE span.
+		{row: 5, spans: 5, visible: " nicstat:  1 devices,  60% max util, 4345 rMbps, 6543 wMbps, 3451/0 err/coll"},
+		// filesyst: size, used, use% — the identifiers are not values and stay plain.
+		{row: 6, spans: 3, visible: "filesyst: /dev/sda1 on /data (ext4), 1.0K size, 512B used,  74% use"},
+	}
+
+	for _, tc := range testcases {
+		line := lines[tc.row]
+		assert.Equal(t, tc.spans, strings.Count(line, boldOpen), "line %d: bold span count: %q", tc.row, line)
+		assert.Equal(t, tc.spans, strings.Count(line, boldReset), "line %d: unbalanced bold spans: %q", tc.row, line)
+		assert.Equal(t, tc.visible, stripSGR(line), "line %d: bold must not change the visible text", tc.row)
+	}
+
+	// The '%' of "max util" is a unit, so it stays OUTSIDE the span (as in the compact rows).
+	assert.Contains(t, lines[4], boldOpen+" 80"+boldReset+"% max util")
+	assert.Contains(t, lines[5], boldOpen+" 60"+boldReset+"% max util")
+	// err/coll is a composite value: one span for both sides, matching stat.go:472/481.
+	assert.Contains(t, lines[5], boldOpen+"3451/0"+boldReset+" err/coll")
+	// The rate formatter returns value and unit as one string, so the unit is bolded with the
+	// number (Decision 9 accepts this explicitly — pretty.RateUnitPrefixed is not changed).
+	assert.Contains(t, lines[4], boldOpen+"1135 rMB/s"+boldReset)
+}
+
+// Test_renderSysstatVerbose_identifiersNotBold verifies the negative half of the convention on the
+// filesyst row: device, mountpoint and fstype are identifiers, not values, and render plain — while
+// size/used/use% on the very same row are bold.
+func Test_renderSysstatVerbose_identifiersNotBold(t *testing.T) {
+	lines := verboseSysstatLines(t, verboseSysstatBoldFixture(), false, "/data")
+
+	if !assert.Len(t, lines, 7) {
+		return
+	}
+	row := lines[6]
+
+	for _, id := range []string{"/dev/sda1", "/data", "ext4"} {
+		for _, span := range boldSpans(row) {
+			assert.NotContains(t, span, id, "identifier %q must not be wrapped in bold: %q", id, row)
+		}
+	}
+
+	assert.Contains(t, row, boldOpen+"1.0K"+boldReset+" size")
+	assert.Contains(t, row, boldOpen+"512B"+boldReset+" used")
+	assert.Contains(t, row, boldOpen+" 74"+boldReset+"% use")
+}
+
+// Test_renderSysstatVerbose_degradedFilesystNotBold verifies the fully degraded filesyst row keeps
+// its bare n/a plain — there is no value on that row at all.
+func Test_renderSysstatVerbose_degradedFilesystNotBold(t *testing.T) {
+	s := stat.Stat{System: stat.System{
+		Fsstats: stat.Fsstats{
+			{Mount: stat.Mount{Device: "/dev/sda1", Mountpoint: "/srv/other", Fstype: "ext4"}},
+		},
+	}}
+
+	lines := verboseSysstatLines(t, s, false, "/var/lib/pgsql/data")
+	if assert.Len(t, lines, 7) {
+		assert.Equal(t, "filesyst: n/a", lines[6])
+		assert.NotContains(t, lines[6], boldOpen)
+	}
+}
+
 // Test_renderSysstat_compactUnchanged verifies that verbose=false adds no rows AND that turning
 // verbose on does not perturb the compact rows: the verbose output's first 4 lines must equal the
 // full compact output. This exercises the real invariant (verbose only appends), unlike comparing
@@ -281,8 +437,8 @@ func Test_renderSysstat_compactUnchanged(t *testing.T) {
 	}}
 
 	var compact, verbose bytes.Buffer
-	assert.NoError(t, renderSysstat(&compact, s, false, true, "/"))
-	assert.NoError(t, renderSysstat(&verbose, s, true, true, "/"))
+	assert.NoError(t, renderSysstat(&compact, s, false, true, "/", time.Second))
+	assert.NoError(t, renderSysstat(&verbose, s, true, true, "/", time.Second))
 
 	compactLines := strings.Split(strings.TrimRight(compact.String(), "\n"), "\n")
 	verboseLines := strings.Split(strings.TrimRight(verbose.String(), "\n"), "\n")
@@ -336,17 +492,18 @@ func Test_renderPgstat_verboseNA(t *testing.T) {
 		assert.Equal(t,
 			"    workload:  n/a tps,  n/a ins/s,  n/a upd/s,  n/a del/s,  n/a ret/s,  n/a tmp/s, n/a others",
 			lines[4])
+		// The always-real fields are bold; every n/a sentinel stays plain (Decision 9).
 		assert.Equal(t,
-			"   databases:      n/a per  7 databases,      n/a growth/s,     n/a cache hit ratio",
+			"   databases:      n/a per \033[37;1m 7\033[0m databases,      n/a growth/s,     n/a cache hit ratio",
 			lines[5])
 		assert.Equal(t,
-			"     workers:  1/8 workers/max,  0/4 logical workers,  2/8 parallel workers",
+			"     workers: \033[37;1m 1/8\033[0m workers/max, \033[37;1m 0/4\033[0m logical workers, \033[37;1m 2/8\033[0m parallel workers",
 			lines[6])
 		assert.Equal(t,
-			" replication: 1.0K wal size,      n/a lag,  0/     n/a slots/retain,      n/a archiving backlog, 0/0 senders/receivers",
+			" replication: \033[37;1m1.0K\033[0m wal size,      n/a lag, \033[37;1m 0\033[0m/     n/a slots/retain,      n/a archiving backlog, \033[37;1m0/0\033[0m senders/receivers",
 			lines[7])
 		assert.Equal(t,
-			"   bgwr/ckpt: 12/3 timed/req, n/a/n/a ms write/sync, n/a maxwritten",
+			"   bgwr/ckpt: \033[37;1m12/3\033[0m timed/req, n/a/n/a ms write/sync, n/a maxwritten",
 			lines[8])
 	}
 }
@@ -374,27 +531,131 @@ func Test_renderPgstat_verboseAvailable(t *testing.T) {
 
 	if assert.Len(t, lines, 9) {
 		// Full-line golden per row: every field renders its real value (no n/a), including the
-		// bgwr write/sync ms deltas (245/30) and maxwritten delta count (4).
+		// bgwr write/sync ms deltas (245/30) and maxwritten delta count (4). Every value is bold,
+		// as in the compact rows above.
 		assert.Equal(t,
-			"    workload: 1432 tps, 4132 ins/s, 5421 upd/s, 4235 del/s, 2341 ret/s,  123 tmp/s,   4 others",
+			"    workload: \033[37;1m1432\033[0m tps, \033[37;1m4132\033[0m ins/s, \033[37;1m5421\033[0m upd/s, \033[37;1m4235\033[0m del/s, \033[37;1m2341\033[0m ret/s, \033[37;1m 123\033[0m tmp/s, \033[37;1m  4\033[0m others",
 			lines[4])
 		// cache hit ratio reserves width 7 ("%6.2f%%"): 99.99 renders as " 99.99%" (leading space),
 		// the same 7-column slot the n/a sentinel occupies — so the label position is identical to
 		// the n/a state (see Test_renderPgstat_verboseNA).
 		assert.Equal(t,
-			"   databases:     1.0T per  7 databases,     1.0M growth/s,  99.99% cache hit ratio",
+			"   databases: \033[37;1m    1.0T\033[0m per \033[37;1m 7\033[0m databases, \033[37;1m    1.0M\033[0m growth/s, \033[37;1m 99.99%\033[0m cache hit ratio",
 			lines[5])
 		assert.Equal(t,
-			"     workers:  0/8 workers/max,  0/4 logical workers,  0/8 parallel workers",
+			"     workers: \033[37;1m 0/8\033[0m workers/max, \033[37;1m 0/4\033[0m logical workers, \033[37;1m 0/8\033[0m parallel workers",
 			lines[6])
+		// slots/retain is two spans: an always-real count next to a size that can degrade.
 		assert.Equal(t,
-			" replication: 1.0G wal size,     1.0M lag,  1/    1.0G slots/retain,     1.0M archiving backlog, 2/1 senders/receivers",
+			" replication: \033[37;1m1.0G\033[0m wal size, \033[37;1m    1.0M\033[0m lag, \033[37;1m 1\033[0m/\033[37;1m    1.0G\033[0m slots/retain, \033[37;1m    1.0M\033[0m archiving backlog, \033[37;1m2/1\033[0m senders/receivers",
 			lines[7])
+		// write/sync is two adjacent spans too — both sides degrade together to their own n/a.
 		assert.Equal(t,
-			"   bgwr/ckpt: 12/3 timed/req, 245/30 ms write/sync,  4 maxwritten",
+			"   bgwr/ckpt: \033[37;1m12/3\033[0m timed/req, \033[37;1m245\033[0m/\033[37;1m30\033[0m ms write/sync, \033[37;1m 4\033[0m maxwritten",
 			lines[8])
 	}
 	assert.NotContains(t, buf.String(), "n/a")
+}
+
+// verbosePgstatLines renders pgstat in verbose mode from the given overview and returns the rows.
+func verbosePgstatLines(t *testing.T, o stat.PgstatOverview) []string {
+	t.Helper()
+	var buf bytes.Buffer
+	assert.NoError(t, renderPgstat(&buf, stat.Stat{Pgstat: stat.Pgstat{Overview: o}}, pgstatTestProps(), pgstatTestDB(), true))
+	return strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+}
+
+// Test_renderPgstatVerbose_boldOnValues locks the bold convention on the five verbose pgstat rows:
+// every numeric value carries the base rows' \033[37;1m…\033[0m pair. The spans are COUNTED per row
+// against the exact expected number — asserting that a row merely contains an escape would pass
+// with one value bolded and the rest plain. The visible text (escapes stripped) must stay
+// byte-identical to the pre-bold golden: SGR sequences are zero-width.
+func Test_renderPgstatVerbose_boldOnValues(t *testing.T) {
+	o := stat.PgstatOverview{
+		Valid: true, HasPrev: true,
+		TPSRate: 1432, InsertsRate: 4132, UpdatesRate: 5421, DeletesRate: 4235,
+		ReturnedRate: 2341, TempFilesRate: 123, OthersInterval: 4,
+		DatabasesCount: 7, TotalSize: 1 << 40, TotalSizeValid: true, GrowthPerSec: 1 << 20,
+		CacheHitRatio: 99.99, CacheHitRatioValid: true,
+		WorkersUmbrellaActive: 1, WorkersLogicalActive: 2, WorkersParallelActive: 3,
+		WalSize: 1 << 30, LagBytes: 1 << 20, LagBytesValid: true,
+		SlotsCount: 1, RetainedBytes: 1 << 30, RetainedValid: true,
+		ArchivingBacklog: 1 << 20, ArchivingBacklogValid: true, Senders: 2, Receivers: 1,
+		CkptTimed: 12, CkptReq: 3, CkptWriteMsDelta: 245, CkptSyncMsDelta: 30, MaxWrittenDelta: 4,
+	}
+
+	lines := verbosePgstatLines(t, o)
+	if !assert.Len(t, lines, 9) {
+		return
+	}
+
+	testcases := []struct {
+		row     int
+		spans   int // number of bold value spans expected on the row
+		visible string
+	}{
+		// workload: the seven naInt rates (bolded inside naInt's value branch).
+		{row: 4, spans: 7,
+			visible: "    workload: 1432 tps, 4132 ins/s, 5421 upd/s, 4235 del/s, 2341 ret/s,  123 tmp/s,   4 others"},
+		// databases: size, databases count, growth, cache hit ratio.
+		{row: 5, spans: 4,
+			visible: "   databases:     1.0T per  7 databases,     1.0M growth/s,  99.99% cache hit ratio"},
+		// workers: three "%s/%d" composites, one span each (matching stat.go:481).
+		{row: 6, spans: 3,
+			visible: "     workers:  1/8 workers/max,  2/4 logical workers,  3/8 parallel workers"},
+		// replication: wal size, lag, slots count, retain, backlog, senders/receivers. The
+		// slots/retain composite is TWO spans — an always-real count next to a possibly-n/a size.
+		{row: 7, spans: 6,
+			visible: " replication: 1.0G wal size,     1.0M lag,  1/    1.0G slots/retain,     1.0M archiving backlog, 2/1 senders/receivers"},
+		// bgwr/ckpt: timed/req as one span, then writeMs, syncMs and maxwritten.
+		{row: 8, spans: 4,
+			visible: "   bgwr/ckpt: 12/3 timed/req, 245/30 ms write/sync,  4 maxwritten"},
+	}
+
+	for _, tc := range testcases {
+		line := lines[tc.row]
+		assert.Equal(t, tc.spans, strings.Count(line, boldOpen), "line %d: bold span count: %q", tc.row, line)
+		assert.Equal(t, tc.spans, strings.Count(line, boldReset), "line %d: unbalanced bold spans: %q", tc.row, line)
+		assert.Equal(t, tc.visible, stripSGR(line), "line %d: bold must not change the visible text", tc.row)
+	}
+
+	// Composite rules spelled out: one span for the workers/senders/timed pairs, two separate
+	// spans for slots/retain.
+	assert.Contains(t, lines[6], boldOpen+" 1/8"+boldReset+" workers/max")
+	assert.Contains(t, lines[7], boldOpen+"2/1"+boldReset+" senders/receivers")
+	assert.Contains(t, lines[7], boldOpen+" 1"+boldReset+"/"+boldOpen+"    1.0G"+boldReset+" slots/retain")
+	assert.Contains(t, lines[8], boldOpen+"12/3"+boldReset+" timed/req")
+	assert.Contains(t, lines[8], boldOpen+"245"+boldReset+"/"+boldOpen+"30"+boldReset+" ms write/sync")
+}
+
+// Test_renderPgstatVerbose_sentinelsNotBold is the negative half of the convention: with no prev
+// snapshot and every source unavailable, not a single n/a rendering is wrapped in bold — asserted
+// per sentinel (every bold span on the row is inspected), not as "the row contains n/a".
+func Test_renderPgstatVerbose_sentinelsNotBold(t *testing.T) {
+	o := stat.PgstatOverview{
+		Valid:   true,
+		HasPrev: false, // first tick: workload rates and the bgwr deltas degrade
+		// TotalSizeValid/CacheHitRatioValid/LagBytesValid/RetainedValid/ArchivingBacklogValid false.
+		DatabasesCount: 7, WalSize: 1024, CkptTimed: 12, CkptReq: 3,
+	}
+
+	lines := verbosePgstatLines(t, o)
+	if !assert.Len(t, lines, 9) {
+		return
+	}
+
+	// Expected number of n/a sentinels per verbose row: workload (7 rates), databases (size,
+	// growth, cache hit ratio), workers (none — all fields are always real), replication (lag,
+	// retain, archiving backlog), bgwr/ckpt (write ms, sync ms, maxwritten).
+	naPerRow := []int{7, 3, 0, 3, 3}
+
+	for i, wantNA := range naPerRow {
+		line := lines[4+i]
+		assert.Equal(t, wantNA, strings.Count(line, naLiteral), "line %d: n/a count: %q", 4+i, line)
+		for _, span := range boldSpans(line) {
+			assert.NotContains(t, span, naLiteral, "line %d: n/a sentinel wrapped in bold: %q", 4+i, span)
+		}
+	}
 }
 
 // Test_renderPgstat_verboseNAWidthStatic verifies the core of the visual-review fix: when a verbose
@@ -422,23 +683,27 @@ func Test_renderPgstat_verboseNAWidthStatic(t *testing.T) {
 	naBase.HasPrev = false
 	naRows := render(naBase)
 
+	// Values are bold and n/a sentinels are plain, so the two states differ by 12 zero-width bytes
+	// per value (\033[37;1m + \033[0m). The invariant this test states is about SCREEN columns, so
+	// every comparison below runs over the SGR-stripped row (stripSGR reuses the ansiEscape regexp).
+
 	// cache hit ratio (databases row, index 5): value in a fixed 7-column slot ("100.00%"); n/a
 	// right-aligned into the same 7 ("    n/a"), so the trailing label offset is identical.
-	assert.Contains(t, valRows[5], "100.00% cache hit ratio")
-	assert.Contains(t, naRows[5], "    n/a cache hit ratio")
+	assert.Contains(t, stripSGR(valRows[5]), "100.00% cache hit ratio")
+	assert.Contains(t, stripSGR(naRows[5]), "    n/a cache hit ratio")
 	assert.Equal(t,
-		strings.Index(valRows[5], "cache hit ratio"),
-		strings.Index(naRows[5], "cache hit ratio"),
+		strings.Index(stripSGR(valRows[5]), "cache hit ratio"),
+		strings.Index(stripSGR(naRows[5]), "cache hit ratio"),
 		"cache hit ratio label must sit at the same offset in the value and n/a states")
 
 	// workload rate (workload row, index 4): the naInt path reserves width 4, so n/a (" n/a") spans
-	// the same columns as the value (" 999"), keeping the "tps" label static — a direct byte-offset
+	// the same columns as the value (" 999"), keeping the "tps" label static — a direct offset
 	// assertion on the naInt path, not just an implied golden-string match.
-	assert.Contains(t, valRows[4], " 999 tps")
-	assert.Contains(t, naRows[4], " n/a tps")
+	assert.Contains(t, stripSGR(valRows[4]), " 999 tps")
+	assert.Contains(t, stripSGR(naRows[4]), " n/a tps")
 	assert.Equal(t,
-		strings.Index(valRows[4], "tps"),
-		strings.Index(naRows[4], "tps"),
+		strings.Index(stripSGR(valRows[4]), "tps"),
+		strings.Index(stripSGR(naRows[4]), "tps"),
 		"tps label must sit at the same offset in the value and n/a states")
 
 	// The five verbose Size fields (databases: size before " per", growth before " growth/s";
@@ -495,15 +760,15 @@ func Test_renderPgstat_verboseNAWidthStatic(t *testing.T) {
 	rowsNA := render(sampleNA)
 
 	for _, f := range sizeFields {
-		// (a) two value samples of different width keep the label at the same byte offset.
+		// (a) two value samples of different width keep the label at the same visible offset.
 		assert.Equal(t,
-			strings.Index(rowsA[f.row], f.label),
-			strings.Index(rowsB[f.row], f.label),
+			strings.Index(stripSGR(rowsA[f.row]), f.label),
+			strings.Index(stripSGR(rowsB[f.row]), f.label),
 			"%q label must sit at the same offset across different-width Size samples", f.label)
-		// (b) value vs n/a keep the label at the same byte offset (RED on bare naLiteral today).
+		// (b) value vs n/a keep the label at the same visible offset (RED on bare naLiteral today).
 		assert.Equal(t,
-			strings.Index(rowsA[f.row], f.label),
-			strings.Index(rowsNA[f.row], f.label),
+			strings.Index(stripSGR(rowsA[f.row]), f.label),
+			strings.Index(stripSGR(rowsNA[f.row]), f.label),
 			"%q label must sit at the same offset in the value and n/a states", f.label)
 	}
 }
@@ -944,6 +1209,15 @@ func visibleRuneLen(line string) int {
 	return len([]rune(ansiEscape.ReplaceAllString(strings.TrimRight(line, "\n"), "")))
 }
 
+// stripSGR removes the ANSI SGR sequences from a rendered line so an assertion can measure the
+// VISIBLE text and the VISIBLE column of a label: the escapes are zero-width on screen, so the
+// alignment invariants (naReserve / ReserveWidth / SizeWidth) hold in columns, not in bytes. It
+// reuses the ansiEscape regexp visibleRuneLen is built on — visibleRuneLen itself returns a rune
+// count and cannot be used for offsets.
+func stripSGR(line string) string {
+	return ansiEscape.ReplaceAllString(line, "")
+}
+
 // Test_printStatHeader_midOffset_bothMarkers verifies that at a mid offset BOTH edge markers
 // are present: the left marker ‹ (columns hidden left) and the right marker › (columns hidden
 // right). The TDD Anchor for task 02 requires both markers in the mid-offset case (review
@@ -1069,6 +1343,145 @@ func Test_printDbstat_clampsScrollOffset(t *testing.T) {
 	err := renderDbstat(&buf, cfg, s, 40)
 	assert.NoError(t, err)
 	assert.Equal(t, 2, cfg.scrollOffset, "scrollOffset must be clamped to maxOffset, not the inflated value")
+}
+
+// Test_scrollOffsetFor pins the minimum-movement auto-scroll helper: given the current
+// offset and the sort column, it returns the offset that brings that column into the
+// visible window with the smallest movement, or leaves the offset alone when the column
+// is already visible (fully or partially) or cannot be shown at all.
+//
+// The fixture is 7 uniform columns of width 10 (each costs 12 printed cells) on a 40-cell
+// terminal: frozen column 0 takes 12, leaving a base budget of 28 for scrollable columns.
+// At offset 1 the window is 2..4 (column 4 only partially visible), maxOffset is 3.
+func Test_scrollOffsetFor(t *testing.T) {
+	// uniformWidths builds a dense map[int]int with the same width for columns [0, ncols).
+	uniformWidths := func(ncols, width int) map[int]int {
+		m := make(map[int]int, ncols)
+		for i := 0; i < ncols; i++ {
+			m[i] = width
+		}
+		return m
+	}
+
+	const (
+		ncols     = 7
+		width     = 10
+		termWidth = 40
+	)
+	widths := uniformWidths(ncols, width)
+
+	t.Run("already visible", func(t *testing.T) {
+		// Column 3 sits inside the window 2..4 at offset 1 => no movement at all.
+		want := visibleColumns(ncols, widths, termWidth, 1).clamped
+		assert.Equal(t, want, scrollOffsetFor(ncols, widths, termWidth, 1, 3))
+	})
+
+	t.Run("partially visible counts as visible", func(t *testing.T) {
+		// Column 4 is the last one in the window at offset 1: its start fits the budget but
+		// its tail is truncated by the terminal edge. Per [009] countFit semantics that is
+		// "visible" and must not trigger a scroll.
+		win := visibleColumns(ncols, widths, termWidth, 1)
+		assert.Equal(t, 4, win.last, "fixture: column 4 must be the partially visible last one")
+		assert.Equal(t, win.clamped, scrollOffsetFor(ncols, widths, termWidth, 1, 4))
+	})
+
+	t.Run("column to the right", func(t *testing.T) {
+		// Column 6 lies past the window at offset 1. The result must be the SMALLEST offset
+		// whose window admits it: visible at the returned offset, not visible one step before.
+		got := scrollOffsetFor(ncols, widths, termWidth, 1, 6)
+		assert.Greater(t, got, 1, "the window must move rightwards")
+
+		win := visibleColumns(ncols, widths, termWidth, got)
+		assert.True(t, 6 >= win.first && 6 <= win.last,
+			"column 6 must be inside the window at the returned offset %d (first=%d last=%d)", got, win.first, win.last)
+
+		prev := visibleColumns(ncols, widths, termWidth, got-1)
+		assert.False(t, 6 >= prev.first && 6 <= prev.last,
+			"column 6 must NOT be inside the window at offset %d (first=%d last=%d) — the result is not minimal",
+			got-1, prev.first, prev.last)
+	})
+
+	t.Run("column to the left", func(t *testing.T) {
+		// At offset 3 (maxOffset) the window starts at column 4; column 1 is hidden to the
+		// left. The minimum movement puts it exactly at the left edge of the window.
+		got := scrollOffsetFor(ncols, widths, termWidth, 3, 1)
+		win := visibleColumns(ncols, widths, termWidth, got)
+		assert.Equal(t, 1, win.first, "the sort column must land at the left edge of the window")
+		assert.True(t, 1 <= win.last, "the sort column must be inside the window")
+	})
+
+	t.Run("frozen column zero", func(t *testing.T) {
+		// Column 0 is always printed, so selecting it must never move the window.
+		assert.Equal(t, 2, scrollOffsetFor(ncols, widths, termWidth, 2, 0))
+	})
+
+	t.Run("orderKey out of range", func(t *testing.T) {
+		// Bounds are checked against the fresh result's column count: after a view switch
+		// config.view.Ncols and s.Result.Ncols can disagree for one frame (issue #99 class).
+		assert.Equal(t, 2, scrollOffsetFor(ncols, widths, termWidth, 2, ncols))
+		assert.Equal(t, 2, scrollOffsetFor(ncols, widths, termWidth, 2, ncols+5))
+		assert.Equal(t, 2, scrollOffsetFor(ncols, widths, termWidth, 2, -1))
+	})
+
+	t.Run("empty result", func(t *testing.T) {
+		// Zero data rows: Ncols and ColsWidth still come from the aligned headers, so the
+		// offset stays computable.
+		cfg := makeRenderConfig(6, 10)
+		s := makeRenderResult(6, 0)
+
+		got := scrollOffsetFor(s.Result.Ncols, cfg.view.ColsWidth, termWidth, 0, 5)
+		win := visibleColumns(s.Result.Ncols, cfg.view.ColsWidth, termWidth, got)
+		assert.True(t, 5 >= win.first && 5 <= win.last,
+			"last column must be brought into view (offset=%d first=%d last=%d)", got, win.first, win.last)
+	})
+
+	t.Run("terminal narrower than frozen column", func(t *testing.T) {
+		// No offset can admit any scrollable column (the frozen column alone overflows the
+		// terminal): leave the window alone instead of looping or landing on an edge.
+		assert.Equal(t, 2, scrollOffsetFor(ncols, widths, 5, 2, 6))
+		assert.Equal(t, 2, scrollOffsetFor(ncols, widths, 5, 2, 1))
+	})
+}
+
+// Test_renderDbstat_autoScrollConsumesFlag verifies that a pending auto-scroll request is
+// consumed by a single render: the window moves so the sort column becomes visible, and the
+// flag is left cleared.
+func Test_renderDbstat_autoScrollConsumesFlag(t *testing.T) {
+	cfg := makeRenderConfig(7, 10)
+	cfg.scrollOffset = 0
+	cfg.view.OrderKey = 6 // last column, far outside the window at offset 0
+	cfg.autoScrollToOrderKey = true
+	s := makeRenderResult(7, 2)
+
+	var buf bytes.Buffer
+	assert.NoError(t, renderDbstat(&buf, cfg, s, 40))
+
+	assert.False(t, cfg.autoScrollToOrderKey, "the request must be consumed by the render")
+	assert.Contains(t, buf.String(), "col6", "the sort column header must be visible after auto-scroll")
+	assert.Greater(t, cfg.scrollOffset, 0, "the window must have moved towards the sort column")
+}
+
+// Test_renderDbstat_autoScrollIsOneShot verifies the request fires exactly once: after the
+// consuming render, a manual [ / ] scroll is never undone by the next refresh.
+func Test_renderDbstat_autoScrollIsOneShot(t *testing.T) {
+	cfg := makeRenderConfig(7, 10)
+	cfg.scrollOffset = 0
+	cfg.view.OrderKey = 6
+	cfg.autoScrollToOrderKey = true
+	s := makeRenderResult(7, 2)
+
+	var buf bytes.Buffer
+	assert.NoError(t, renderDbstat(&buf, cfg, s, 40))
+	assert.Greater(t, cfg.scrollOffset, 0)
+
+	// The user manually scrolls back to the left edge; the next refresh must keep it there.
+	cfg.scrollOffset = 0
+	buf.Reset()
+	assert.NoError(t, renderDbstat(&buf, cfg, s, 40))
+
+	assert.Equal(t, 0, cfg.scrollOffset, "manual scroll must survive the next refresh")
+	assert.False(t, cfg.autoScrollToOrderKey)
+	assert.NotContains(t, buf.String(), "col6", "the sort column must stay off-window after manual scroll")
 }
 
 // Test_firstTickCollectingHint pins the cmdline first-tick hint logic: while the collector's

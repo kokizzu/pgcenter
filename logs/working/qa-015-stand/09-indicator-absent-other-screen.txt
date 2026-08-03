@@ -1,0 +1,52 @@
+pgcenter: 2026-08-03 08:36:45, refresh: 1s, load average: 0.70, 0.45, 0.26                      state [ok]: /tmp:5432 postgres@ppem (ver: 18.4, up 00:13:09, recovery: f)
+    %cpu:  8.1 us,  1.0 sy,  0.0 ni, 90.9 id,  0.0 wa,  0.0 hi,  0.0 si,  0.0 st                  activity: 14/50 conns,  0/0 prepared,  8 idle,  0 idle_xact,  6 active,  0 waiting,  0 other
+ MiB mem:   2970 total,    582 free,    555 used,     1833 buff/cached                          autovacuum:  0/4 workers/max,  0 manual,  0 wraparound, 00:00:00 vac_maxtime
+MiB swap:    486 total,    486 free,      0 used,      1/0 dirty/writeback                      statements:   0 stmt/s, 0.000 stmt_avgtime, 00:05:42 xact_maxtime, 00:00:00 prep_maxtime
+
+datname    backends_total  commits   rollbacks  read,KiB  hits      returned  fetched   inserts   updates   deletes   conflicts  deadlocks  csum_fails  temp_files  temp_bytes  read,ms   writ
+template1  0               0         0          0         0         0         0         0         0         0         0          0          0           0           0           0.00      0.00
+template0  0               0         0          0         0         0         0         0         0         0         0          0          0           0           0           0.00      0.00
+ppem       9               8         0          0         600       13463     738       0         0         0         0          0          0           0           0           0.00      0.00
+postgres   5               4         0          0         154       955       84        0         0         0         0          0          0           0           0           0.00      0.00
+           0               0         0          0         30        15        7         0         0         0         0          0          0           0           0           0.00      0.00
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

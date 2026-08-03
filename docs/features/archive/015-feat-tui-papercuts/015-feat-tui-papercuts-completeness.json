@@ -1,0 +1,72 @@
+{
+  "status": "fail",
+  "sources": {
+    "user_spec": true,
+    "tech_spec": true,
+    "tasks": true
+  },
+  "tasks_note": "No separate task files exist yet (docs/features/015-.../*-task-NN.md not created). The nine tasks live in the tech-spec 'Implementation Tasks' section and were validated from there.",
+  "requirements_total": 27,
+  "requirements_covered": 25,
+  "requirements_partial": 1,
+  "requirements_missing": 1,
+  "findings": [
+    {
+      "type": "gap",
+      "source": "user-spec",
+      "requirement": "US-5: Запрос на автоскролл не переживает переключение экрана, включая переход на procpidstat",
+      "detail": "The tech-spec has zero representation of this criterion. Architecture ('Auto-scroll') describes only set-by-handler / consume-and-clear-at-render; there is no Decision, no Data Models note, no Testing Strategy case ('scrollOffsetFor' cases cover geometry only), no per-task verification row, and Task 1's description does not mention screen switching. The user-spec calls this out twice — as an edge case AND as an acceptance criterion — precisely because there are two switch paths and one of them bypasses the common handler. Confirmed in code: top/config_view.go:240 viewSwitchHandler resets config.scrollOffset, and top/config_view.go:~256 switchViewToProcPidStat repeats that reset inline with a comment explaining the bypass. The new one-shot flag config.autoScrollToOrderKey needs the same double reset; nothing in the tech-spec says so, and the flag is consumed by whatever render happens next, i.e. on the NEW screen. Fix: add the reset to both paths in Decisions/Architecture, extend Task 1's description and files (top/config_view.go is already listed), and add a config_view_test.go assertion for both paths.",
+      "severity": "critical"
+    },
+    {
+      "type": "structural_gap",
+      "source": "tech-spec",
+      "requirement": "Decisions section self-containment",
+      "detail": "Two task descriptions carry decision-level rationale that is absent from the Decisions section. Task 2: 'The existing transient field cannot be reused — it is zeroed right after being sent, and that zeroing is load-bearing for the collector's branch order' (the choice of a new config.refresh field over view.View.Refresh — verified as real: top/config_view.go:454-456 sets then zeroes view.Refresh, top/stat.go:93 branches on 'v.Refresh > 0'). Task 3: the root cause of the blank line ('the verbose branch computes the table's top independently of the cmdline while the compact branch ties them together'). Downgraded from critical to major because neither is actually invisible — both appear in the Architecture section ('What we're building/modifying' bullets) and the config.refresh one is also in the Data Models comment, so a future reader of the tech-spec proper will find them. Still worth fixing: these are architectural choices with non-obvious rationale and belong in Decisions, where reviewers look.",
+      "severity": "major"
+    },
+    {
+      "type": "gap",
+      "source": "tech-spec",
+      "requirement": "Final Wave: ownership of stand findings; Task 9 verification",
+      "detail": "Task 8 (stand run) explicitly says 'Report findings; do not fix them in this task.' Task 9 says 'verify every acceptance criterion ... including the stand findings from the previous task' — verify, not fix. No task in any wave owns fixing a defect found on the stand, and no wave is reserved for it. Additionally the 'Per-task verification' table stops at row 8: Task 9 has no verify row at all, so the tech-spec's own AC 'Every acceptance criterion from the user-spec is verified' has no gating check on the task meant to enforce it. Fix: state explicitly that stand findings loop back as fixes (which wave / which task re-runs), and add the Task 9 row.",
+      "severity": "major"
+    },
+    {
+      "type": "partial",
+      "source": "user-spec",
+      "requirement": "US-20: Значения verbose-секций обеих панелей выделены жирным, сентинелы n/a — нет",
+      "detail": "Decision 8 narrows the approved criterion on its own authority: besides the n/a sentinels (which the AC does exempt), it also leaves the filesystem identifier fields (device, mountpoint, fstype) unbolded, and it accepts that the four pretty.RateUnitPrefixed sites bold the unit together with the number. The rationale is sound (identifiers are not values; base line 1 bolds nothing; splitting RateUnitPrefixed would churn internal/pretty and its tests), and the AC's phrase 'значения' is arguably on the tech-spec's side. But this is a user-visible rendering choice decided after user-spec approval, and the stand check ('bold present on values, absent on n/a and identifiers') will pass on the narrowed reading regardless. Worth an explicit owner confirmation rather than a silent narrowing.",
+      "severity": "minor"
+    },
+    {
+      "type": "partial",
+      "source": "user-spec",
+      "requirement": "US-17 / основной сценарий п.1: 'Пользователь запускает pgcenter top — в шапке виден текущий интервал обновления'",
+      "detail": "The tech-spec covers the post-'z' path (config.refresh written by changeRefresh, rendered by renderSysstat, Decision 7 fixes the %ds format), but never says where config.refresh gets its initial 1s value. newConfig() (top/config.go:24) builds the struct with only views and viewCh; the 1s default is assigned to view.Refresh in doWork (top/ui.go:82) and immediately zeroed at ui.go:86 — a file Task 2 does not list. Without an explicit default the header shows 'refresh: 0s' until the first 'z'. The Testing Strategy tests the format at 1/60/300s but not the startup default. Fix: name the initialisation site (newConfig is the natural one, and Task 2 already modifies top/config.go) and add a startup-default assertion.",
+      "severity": "minor"
+    },
+    {
+      "type": "underengineering",
+      "source": "tech-spec",
+      "requirement": "Wave 1 parallelism / merge safety",
+      "detail": "The risk table claims 'Wave 1 items are disjoint regions of stat.go', which understates the contention. Three of the four Wave-1 tasks write top/stat.go (T1 renderDbstat, T2 renderSysstat, T4 renderSysstatVerbose/renderPgstatVerbose) — those regions are genuinely disjoint, so that part holds. Not covered: (a) T1 and T2 both add a field to the same config struct in top/config.go, i.e. adjacent lines in one hunk; (b) T1, T2 and T4 all write top/stat_test.go and T1/T2 both write top/config_view_test.go; (c) Backward Compatibility notes that T2 changes the printSysstat/renderSysstat signature across '5 call sites including tests' — those test call sites live in the same stat_test.go that T4 is concurrently rewriting for bold assertions. All of it is textual and compile-visible, not semantic, so severity is minor — but the mitigation should say who resolves stat_test.go, or T2 and T4 should be serialised. The four-way split of Wave 1 itself is justified: the items are behaviourally independent.",
+      "severity": "minor"
+    },
+    {
+      "type": "partial",
+      "source": "user-spec",
+      "requirement": "Ключевые компоненты: индикатор 'дорисовывается при каждом выводе и переживает обновление, переключение экрана и любое транзитное сообщение'",
+      "detail": "The single-composition-point design makes the indicator reappear only on the next cmdline WRITE. That is sufficient for every listed AC — both screen-switch paths write a message (switchViewTo prints view.Msg, switchViewToProcPidStat always prints one of four messages, menu.go likewise), and Decision 9 makes the 2s timer re-render instead of erasing. The uncovered case is UI recreation: mainLoop (top/ui.go:17) rebuilds the gocui.Gui after a pager/editor exit or a UI error, creating a fresh empty cmdline view, and layout() writes to it only for app.uiError. The indicator stays blank until the user triggers some message. Not an approved AC (pager/pause interaction was explicitly moved to feature [016]), so minor — but if it is intentionally out of scope it should be recorded as a known limitation rather than left unstated.",
+      "severity": "minor"
+    },
+    {
+      "type": "partial",
+      "source": "user-spec",
+      "requirement": "Граничный случай: 'Автоскролл при пустом результате (все строки отфильтрованы)'",
+      "detail": "The user-spec asserts the mechanism must work when the result set is empty (widths are known from headers). The scrollOffsetFor test list covers already-visible / right / left / column 0 / partial / index clamp, but not the zero-row case, and the Architecture text describes consumption 'immediately before the existing visibleColumns call' without saying what the widths are derived from when there are no rows. Add the empty-result case to the scrollOffsetFor test list.",
+      "severity": "minor"
+    }
+  ],
+  "summary": "25/27 acceptance criteria covered, 1 partial (US-20 bold scope narrowed by Decision 8), 1 missing (US-5 auto-scroll flag reset on screen switch, incl. the procpidstat bypass — absent from Decisions, Architecture, tests, tasks and verification). No scope creep: every tech-spec element traces to a user-spec requirement or is engineering hygiene (race removal, features-catalog correction, signature updates). No overengineering: all four new pure functions and the one package-level var are load-bearing — the multi-token composer is explicitly demanded by an AC, and the ambient cmdlineCfg is the user-spec's own mitigation ('композиция внутри самой функции вывода') with alternatives weighed in Decision 1. Remaining findings are process/structure: rationale for two tasks sits in Architecture instead of Decisions (major), no owner for fixing stand findings and no verification row for Task 9 (major), plus four minors (startup refresh default, Wave-1 test-file contention, indicator after UI recreation, empty-result auto-scroll test). Fails on the one critical gap."
+}

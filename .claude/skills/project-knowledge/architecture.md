@@ -102,7 +102,8 @@ dedicated `view.View.Verbose bool` (rides `viewCh` to the collector) mirrored in
   into the four `SetView` calls. Compact (and the height-guard fallback) reproduces the historical
   literals (`4/4/3/5/4`) byte-identically; verbose grows the panels asymmetrically (`sysstat` +3,
   `pgstat` +5) and shifts `cmdline`/`dbstat` down. The height-guard refuses to expand when the band +
-  cmdline + table header + ≥1 data row would not fit (threshold `maxY ≥ 13`), falling back to compact +
+  cmdline + table header + ≥1 data row would not fit (threshold `maxY ≥ 12` since 015-feat-tui-papercuts,
+  which tied the verbose table top to the cmdline the way the compact branch always did), falling back to compact +
   a one-shot cmdline hint. Pure-function, gocui-free, table-tested — the [009] `visibleColumns` precedent.
 - **All-three system collection branch (`internal/stat/stat.go:262`, `:401`).** When `view.Verbose` is
   set, `Collector.Update` runs a verbose-gated branch placed **after** the existing mutually-exclusive

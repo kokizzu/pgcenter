@@ -1,10 +1,17 @@
 package top
 
 import (
+	"time"
+
 	"github.com/lesovsky/pgcenter/internal/query"
 	"github.com/lesovsky/pgcenter/internal/stat"
 	"github.com/lesovsky/pgcenter/internal/view"
 )
+
+// defaultRefresh is the initial refresh interval. It is the single literal for that value: both
+// the collector seed (doWork) and the displayed copy (app.setup) use it, so the number shown in
+// the header and the interval the collector actually runs at cannot drift apart.
+const defaultRefresh = time.Second
 
 // config defines 'top' program runtime configuration.
 type config struct {
@@ -18,6 +25,19 @@ type config struct {
 	procMask     int            // Process mask used for selecting group of process.
 	scrollOffset int            // Horizontal scroll position: index into scrollable columns (1..Ncols-1); 0 means no scroll. Ephemeral, reset on view switch.
 	verbose      bool           // Verbose display mode for the top summary panels. Persistent: unlike scrollOffset, it is NOT reset on view switch (mirrored into every views entry).
+	// autoScrollToOrderKey is a one-shot request to bring the sort column into the visible window.
+	// It is set by the sort handlers (orderKeyLeft/orderKeyRight) and consumed — and cleared — by
+	// renderDbstat on the next frame, so manual [ / ] scrolling afterwards is never undone by the
+	// following refresh. Ephemeral like scrollOffset: reset on BOTH view-switch paths.
+	autoScrollToOrderKey bool
+	// refresh is the durable copy of the current refresh interval, kept solely for displaying it in
+	// the sysstat header. It cannot be read back from view.Refresh: that field is a transient courier
+	// for the stats goroutine — both writers (doWork in ui.go and changeRefresh in config_view.go)
+	// set it, send the view on viewCh and zero it on the very next line, because collectStat treats a
+	// changed non-zero Refresh on an incoming view as "the interval changed" and returns early. So at
+	// rest view.Refresh is always 0. Written on the gocui goroutine (changeRefresh, seeded in
+	// app.setup before any goroutine starts) and read there too (printStat's g.Update closure).
+	refresh time.Duration
 }
 
 // newConfig creates 'top' initial configuration.

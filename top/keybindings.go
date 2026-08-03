@@ -58,6 +58,7 @@ func keybindings(app *app) error {
 		{"sysstat", 'S', switchViewToProcPidStat(app)},
 		{"sysstat", 'R', dialogOpen(app, dialogPgReload)},
 		{"sysstat", '/', dialogOpen(app, dialogFilter)},
+		{"sysstat", '\\', clearFilters(app.config)},
 		{"sysstat", '-', dialogOpen(app, dialogCancelQuery)},
 		{"sysstat", '_', dialogOpen(app, dialogTerminateBackend)},
 		{"sysstat", 'n', dialogOpen(app, dialogSetMask)},

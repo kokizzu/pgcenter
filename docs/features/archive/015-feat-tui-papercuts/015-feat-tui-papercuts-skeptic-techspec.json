@@ -1,0 +1,100 @@
+{
+  "status": "approved",
+  "summary": "Checked 61 claims against the pgcenter codebase, found 6 mirages (0 critical, 1 major, 5 minor). Every load-bearing claim the spec rests on — 44 printCmdline call sites, four untested files, Refresh zeroing and the collector branch order, Cols write locality, gocui SetView x0>=x1 rejection propagating to MainLoop, the 93-char state-mask prompt breaking at 80 columns, topBandLayout returning 3/5 in compact, .golangci.yml without gochecknoglobals, no package-level var in top/, the features-catalog 'no auto-scroll' line, the named ADRs, and all five promised test names — is confirmed. The defects found are counting/attribution slips and one mislabelled code behaviour (naInt's value branch).",
+  "findings": [
+    {
+      "severity": "major",
+      "type": "missing_pattern",
+      "claim": "tech-spec Decision 8 says: 'Leave the `n/a` sentinels (`naLiteral`, `naReserve`, and the value branch of `naInt`) unwrapped.'",
+      "reality": "`naInt` (top/stat.go:519-524) has two branches: `if !hasPrev { return naReserve(width) }` (the n/a sentinel) and `return pretty.ReserveWidth(int(v), width)` — the VALUE branch, which returns a real number, not an n/a sentinel. The spec names the wrong branch. Taken literally the rule leaves the seven workload numbers (top/stat.go:533-535: TPSRate, InsertsRate, UpdatesRate, DeletesRate, ReturnedRate, TempFilesRate, OthersInterval) plain, which directly contradicts the same decision's stated rule 'bold covers numeric values only'. Additionally the enumeration is incomplete: the bgwr/ckpt row (top/stat.go:594-601) uses three locals — `writeMs`, `syncMs`, `maxw` — that are `naLiteral` on the first tick and real numbers otherwise, a fourth value/n-a-branching site the decision does not mention at all.",
+      "source": "015-feat-tui-papercuts-tech-spec.md, Decisions, Decision 8",
+      "fix": "Rewrite as 'leave the n/a BRANCH of `naInt` (and `naLiteral`/`naReserve`) unwrapped', and state explicitly how the `naInt` and `writeMs`/`syncMs`/`maxw` sites are handled — the SGR wrapper has to move inside the helper/branch, since the format string cannot know which branch was taken."
+    },
+    {
+      "severity": "minor",
+      "type": "name_mismatch",
+      "claim": "tech-spec Decision 1 says: 'the writers are reached from 19 functions across 12 files'.",
+      "reality": "19 functions is correct. The file count is 11, not 12: top/config_view.go, top/dialog.go, top/extra.go, top/menu.go, top/pgconfig.go, top/pglog.go, top/reset.go, top/signal.go, top/stat.go, top/ui.go, top/verbose.go.",
+      "source": "015-feat-tui-papercuts-tech-spec.md, Decisions, Decision 1, Rationale",
+      "fix": "Change '12 files' to '11 files'."
+    },
+    {
+      "severity": "minor",
+      "type": "name_mismatch",
+      "claim": "tech-spec Decision 1 says: 'three of which (`showPgConfig`, `showPgLog`, `resetStat`) have no `config` in scope at all'.",
+      "reality": "There is a fourth: `editPgConfig(g *gocui.Gui, db *postgres.DB, filename string, uiExit chan int)` at top/pgconfig.go:29+ (calls at top/pgconfig.go:39 and :44) also has no `config` in scope. The three named functions are confirmed to have no `config` parameter, but the threading-alternative cost is understated by one signature.",
+      "source": "015-feat-tui-papercuts-tech-spec.md, Decisions, Decision 1, Rationale",
+      "fix": "Say 'four of which (`showPgConfig`, `editPgConfig`, `showPgLog`, `resetStat`)'."
+    },
+    {
+      "severity": "minor",
+      "type": "name_mismatch",
+      "claim": "tech-spec Backward Compatibility says: '`docs/features-catalog.md:190` records \"no auto-scroll to the sort column\" as expected behaviour of [009]'.",
+      "reality": "The text exists and says exactly that, but at docs/features-catalog.md:189, not :190. Full line: 'visible window, which is expected (no auto-scroll to the sort column).' (the sentence starts at line 188).",
+      "source": "015-feat-tui-papercuts-tech-spec.md, Backward Compatibility, Consumer impact",
+      "fix": "Change the reference to `docs/features-catalog.md:188-189`."
+    },
+    {
+      "severity": "minor",
+      "type": "name_mismatch",
+      "claim": "tech-spec Backward Compatibility says: '`printSysstat` and `renderSysstat` gain a refresh parameter (5 call sites including tests)'.",
+      "reality": "Six call sites need editing, not five. `renderSysstat` has 5 (top/stat.go:259 inside printSysstat, top/stat_test.go:59, :150, :284, :285) and `printSysstat` has 1 more (top/stat.go:175). The number 5 is correct for `renderSysstat` alone.",
+      "source": "015-feat-tui-papercuts-tech-spec.md, Backward Compatibility, Internal signature changes",
+      "fix": "Say '6 call sites including tests (5 for `renderSysstat`, 1 for `printSysstat`)'."
+    },
+    {
+      "severity": "minor",
+      "type": "name_mismatch",
+      "claim": "tech-spec says: 'The message text is formatted in the caller's goroutine (`printCmdline` is called once from `doWork`, `top/stat.go:166`)' / Risks: 'the one `printCmdline` call from `doWork` (`stat.go:166`)'.",
+      "reality": "top/stat.go:166 is a `printCmdline(app.ui, \"%s\", msg)` call, but the enclosing function is `printStat` (top/stat.go:157), which `doWork` invokes at top/ui.go:94 — `doWork` itself (top/ui.go:71) contains no `printCmdline` call. The claim is true about the goroutine, false about the enclosing function. Note also that top/stat.go:229 and :237 are two further `printCmdline` calls on the same goroutine, though inside the `app.ui.Update` closure, so the 'exactly one call outside g.Update' property does hold.",
+      "source": "015-feat-tui-papercuts-tech-spec.md, Architecture / How it works; Risks table row 1",
+      "fix": "Reword to 'called from `printStat` (`top/stat.go:166`), which runs on the `doWork` goroutine'."
+    }
+  ],
+  "stats": {
+    "total_claims_checked": 61,
+    "confirmed": 55,
+    "mirages_found": 6,
+    "verified_claims": [
+      "printCmdline has exactly 44 call sites (grep over top/, excluding the definition at top/ui.go:207 and 6 comment mentions)",
+      "printCmdline is reached from 19 distinct functions",
+      "top/ui.go, top/keybindings.go, top/dialog.go, top/help.go have no *_test.go counterparts",
+      "view.View.Refresh is set, sent on viewCh, then zeroed: top/ui.go:82-86 and top/config_view.go:459-462 (changeRefresh)",
+      "collectStat branch order is load-bearing and guarded by `v.Refresh > 0` (top/stat.go, comment 'Branch order is load-bearing: refresh -> ShowExtra -> Verbose -> CollectExtra')",
+      "config.view.Cols is written only by alignViewToResult (top/stat.go:640) within top/",
+      "view.New() sets no Cols on any predefined view, so Cols is nil before the first render",
+      "viewSwitchHandler (top/config_view.go:240-245) stores and reloads the whole view.View, making Cols per-screen",
+      "gocui v0.5.0 SetView returns errors.New(\"invalid dimensions\") when x0 >= x1 (gui.go:130-133)",
+      "gocui MainLoop returns keybinding-handler errors (gui.go:370-380); top/ui.go:45-68 then records app.uiError, checks errorRate and rebuilds the whole UI in the outer for-loop",
+      "dialogSetMask prompt is 93 characters; dialog.go:79 uses x0=len(prompt)-1=92, so at maxX=80 SetView gets x0=92 >= x1=79",
+      "topBandLayout returns compactCmdlineY0=3 / compactCmdlineY1=5 in compact mode (top/layout.go:8-9, 35)",
+      "dialogOpen closes over *app (top/dialog.go:46) so app.config.verbose is reachable; it currently hard-wires y=3,5 at top/dialog.go:79",
+      "Verbose geometry gap is real: tallest=9, cmdlineY0=8, cmdlineY1=10, dbstatY0=10 leaves screen row 10 owned by no view interior",
+      "Height-guard threshold arithmetic: current dbstatY0=10 requires maxY>=13; the compact rule dbstatY0=cmdlineY1-1=9 requires maxY>=12",
+      ".golangci.yml enables gocritic + revive (4 rules: unused-parameter, var-naming, superfluous-else, redefines-builtin-id) and does not enable gochecknoglobals",
+      "top/ has no package-level var in any non-test file",
+      "internal/version has a package-level var block (version.go:8); internal/stat/procpidstat.go:18 declares `var procPidResultCols`",
+      "top/ui.go:227-230 is the bare goroutine calling v.Clear() after the 2s timer",
+      "firstTickHint is declared at top/stat.go:149",
+      "newApp is declared at top/top.go:44",
+      "docs/features-catalog.md records 'no auto-scroll to the sort column' as expected [009] behaviour",
+      "ADR [009] 'Scroll offset on top.config, not on view.View' (decisions-log.md:478) states 'transient view-independent UI state belongs on config'",
+      "ADR [009] 'Partial last column + marker reservation in both walk directions' (decisions-log.md:526) states the refinement was invisible to the original unit tests",
+      "ADR [010] 'Pure topBandLayout geometry function' (decisions-log.md:606) records the pure-function/table-test pattern",
+      "docs/tech-debt.md [012] 'verbose pgstat Size-formatted fields width-breathe between values' is Resolved and 'Locked by a value-vs-n/a byte-offset test'",
+      "Test_scrollOrthogonalToSort (top/config_view_test.go:147), Test_setFilter (:333), Test_changeRefresh (:662), Test_renderSysstat_compact (top/stat_test.go:43), Test_renderPgstat_verboseNAWidthStatic (top/stat_test.go:404, the n/a-width invariant test using strings.Index byte offsets)",
+      "printHeaderCell active-filter predicate is `config.view.Filters[i] != nil && config.view.Filters[i].String() != \"\"` (top/stat.go:902)",
+      "config.view.Filters is written only in setFilter (top/config_view.go:119 delete, :129 assign)",
+      "Exactly four pretty.RateUnitPrefixed call sites in top/stat.go (345, 347, 365, 366), all in renderSysstatVerbose",
+      "Widest view Ncols is 19 (internal/view/view.go:89 and :353)",
+      "`\\` is not bound in top/keybindings.go",
+      "renderSysstat prints 4 lines compact and appends 3 verbose rows (iostat/nicstat/filesyst) for 7 total; sysstatVerboseExtra=3 / pgstatVerboseExtra=5 match the renderers",
+      "renderSysstat line 1 and the renderPgstat info line (formatInfoString) contain no SGR bold; base lines 2-4 of both renderers do",
+      "filesyst row prints Device, Mountpoint, Fstype identifiers (top/stat.go:376-377)",
+      "time.Duration formatting claim: 300s renders as '5m0s' and 60s as '1m0s' via Duration.String()",
+      "patterns.md section 'Driving the TUI on a remote test stand' exists (line 180) and documents `capture-pane -p` vs `capture-pane -p -e`",
+      "visibleColumns (top/stat.go:751) and topBandLayout (top/layout.go:33) exist as pure functions and are not modified by the plan",
+      "All files named in Tasks 1-7 exist except the two declared new: top/ui_test.go and top/dialog_test.go"
+    ]
+  }
+}

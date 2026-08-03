@@ -1,0 +1,60 @@
+{
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "wave_conflict",
+      "issue": "Wave 1: Tasks 1, 2 and 4 all list `top/stat.go` and `top/stat_test.go` in \"Files to modify\". The regions are genuinely disjoint (Task 2 -> printSysstat/renderSysstat, stat.go:258-328; Task 4 -> renderSysstatVerbose stat.go:330-393 and renderPgstatVerbose stat.go:528-610; Task 1 -> renderDbstat stat.go:671-690 plus a new helper near visibleColumns stat.go:751), so this is not a semantic collision. It is still a real execution conflict: feature-execution runs all tasks of a wave in parallel as teammates in the SAME working tree, each committing its own code (SKILL.md: \"Within a wave, all tasks run in parallel\", \"Teammate works -> commits code\"). Three agents editing one 1152-line file concurrently means stale Read snapshots, clobbered Edit hunks and a shared git index — not a mergeable branch conflict. `top/stat_test.go` is worse: all three append test funcs to the same file with no region separation at all. Note also that Task 2 edits renderSysstat, whose body calls renderSysstatVerbose at stat.go:304, immediately adjacent to Task 4's hunk.",
+      "fix": "Make Wave 1 file-disjoint. Concrete option: Wave 1 = Task 3 (`top/layout.go` only — genuinely disjoint) + Task 2; move Task 4 to a later wave, or merge Tasks 2 and 4 into one \"summary-panel rendering\" task (both edit the sysstat/pgstat renderers and the same test file); move Task 1 to a wave after them. Whatever regrouping is chosen, the invariant to satisfy is: no file appears in \"Files to modify\" of two tasks in the same wave."
+    },
+    {
+      "severity": "critical",
+      "category": "wave_conflict",
+      "issue": "Wave 1: Tasks 1 and 2 additionally collide on three more files — `top/config.go` (31 lines; BOTH tasks add a new field to the same `config` struct block, adjacent lines), `top/config_view.go` (Task 1 edits orderKeyLeft/orderKeyRight/viewSwitchHandler/switchViewToProcPidStat, Task 2 edits changeRefresh) and `top/config_view_test.go` (both append tests). The tech-spec itself acknowledges the overlap in the Risks table (\"Auto-scroll and the indicator both edit config.go ... Conflicts are textual only\") but resolves it by asserting the conflicts are harmless rather than by sequencing the tasks. Two parallel agents adding fields to the same 31-line struct is the highest-probability lost-edit case in the whole plan.",
+      "fix": "Separate Tasks 1 and 2 into different waves (or merge the two `config` struct additions into whichever task lands first). Then delete or rewrite the Risks row that currently justifies the overlap, so the risk register does not contradict the wave layout."
+    },
+    {
+      "severity": "critical",
+      "category": "wave_conflict",
+      "issue": "Final Wave: Task 9 explicitly depends on Task 8 — \"including the stand findings from the previous task\" — but both sit in the same wave, which executes in parallel. Two consequences: (a) Task 9 would run before Task 8 has produced any findings, making its own description unsatisfiable; (b) both tasks carry `Skill: pre-deploy-qa`, so two QA agents would concurrently `make build`/`make test` and both would ssh to the same ephemeral stand and drive tmux there — the stand regimen in patterns.md assumes a single session (`tmux new-session -d -s cap`, \"kill the session at the end of the run\"). On the catalog question: nothing in skills-and-reviewers.md forbids two `pre-deploy-qa` tasks, so the skill choice itself is legal — the defect is the same-wave dependency plus the shared single-use stand, not the skill.",
+      "fix": "Pick one: (a) merge Tasks 8 and 9 into a single Final Wave `pre-deploy-qa` task — the skill already covers \"run test suite + verify acceptance criteria\", and the stand regimen is simply how the visual criteria get verified; or (b) keep them separate but move the stand run into its own wave before the Final Wave (Wave 4: stand verification; Final Wave: Pre-deploy QA), so the dependency matches the wave ordering."
+    },
+    {
+      "severity": "major",
+      "category": "task_quality",
+      "issue": "Decision rationale duplicated from the Decisions section into task descriptions. Task 4: \"leaving degraded `n/a` sentinels and identifier fields plain so a missing signal stays visually distinct from a real number\" restates Decision 8's rationale verbatim in substance. Task 7: \"reserving space for the field so an overlong prompt is truncated rather than covered\" restates Decision 3. Task 2: \"The existing transient field cannot be reused — it is zeroed right after being sent, and that zeroing is load-bearing for the collector's branch order\" is a rationale for a design choice that has no Decision entry at all (it lives only as a comment in Data Models). Duplicated rationale drifts when a Decision is revised, and task-decomposition will copy the stale version into the task file.",
+      "fix": "Trim each description to WHAT + a one-clause WHY and point at the Decision instead: Task 4 -> \"...leaving `n/a` sentinels and identifier fields plain (Decision 8)\"; Task 7 -> \"...deriving both axes from the real state (Decisions 3 and 10)\". For Task 2, either promote the transient-field reasoning to a numbered Decision and reference it, or leave it in Data Models and drop the sentence from the task."
+    },
+    {
+      "severity": "minor",
+      "category": "task_quality",
+      "issue": "Task 3's description carries root-cause implementation detail: \"because the verbose branch computes the table's top independently of the cmdline while the compact branch ties them together\". This is diagnosis rather than a technical decision, so it is defensible as WHY — but it also tells the implementer where the fix goes, which is task-file material, and it is the only Wave 1 task whose WHY reaches into the function body.",
+      "fix": "Shorten to the observable defect plus the intent: \"In verbose mode a row between the cmdline and the table belongs to no view and renders empty. Align the verbose arithmetic in `topBandLayout` with the compact rule.\" Move the branch-level explanation into the task file during decomposition."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "issue": "Decisions 5, 6, 7, 9, 10 and 11 have **Decision** and **Rationale** but no **Alternatives considered**, which the template requires for every decision. Decisions 1, 2, 3, 4 and 8 do carry it, so the omission reads as inconsistency rather than as \"no alternative existed\" — and several of these did have a rejected option (Decision 7: `Duration.String()`; Decision 10: keeping the hard-wired `3, 5`; Decision 11: byte length).",
+      "fix": "Add a one-line **Alternatives considered:** to each of Decisions 5, 6, 7, 9, 10, 11 — naming the rejected option and the reason, even when it is the obvious status quo."
+    },
+    {
+      "severity": "minor",
+      "category": "tasks",
+      "issue": "Tasks 1-7 use `dev-code-reviewer, dev-test-reviewer`, omitting `dev-security-auditor` from the catalog's default set for `code-writing`. The omission is defensible: the catalog frames that set as \"Default reviewers\" with a fallback rule (\"When `reviewers` field is empty in a task — fall back to the default set\"), i.e. an explicit non-empty set wins; and this feature has no network, auth, persistence, SQL or secret handling — its entire surface is terminal rendering inside `top/`. The gap is that the rationale is nowhere in the document, so a later reader (or task-decomposition) has no way to tell a deliberate choice from an oversight and may silently restore the default set. Two tasks are the closest to a security frame and are still local-CLI-only: Task 6 (`setFilter` compiles a user-supplied regexp) and Task 7 (the current crash from an out-of-range coordinate derived from prompt length vs terminal width).",
+      "fix": "Add one sentence to the Implementation Tasks preamble or to Decisions stating that `dev-security-auditor` is deliberately omitted for this feature (terminal-only, no network/auth/persistence/SQL), so the explicit reviewer sets are preserved through decomposition."
+    },
+    {
+      "severity": "minor",
+      "category": "verification",
+      "issue": "Per-task verification table gaps: Task 9 has no row, and the row for Task 8 declares `verify: bash` while Task 8 itself carries no `Verify:` field (Final Wave tasks in the template have only Description/Skill/Reviewers — so the task is template-conformant and the table is the side that is out of step).",
+      "fix": "Either drop the Task 8 row from the table and describe the stand run under \"Verification approach\" only, or add `Verify: bash — stand run per patterns.md` to Task 8 and a row for Task 9. This resolves itself if Tasks 8 and 9 are merged per the Final Wave finding."
+    },
+    {
+      "severity": "minor",
+      "category": "standards",
+      "issue": "Documentation impact is only partly planned. The Acceptance Criteria commit to correcting `docs/features-catalog.md` [009] at finalization, but the same change invalidates `.claude/skills/project-knowledge/patterns.md`, section \"printCmdline() — Mutual Exclusion\", which documents the current `g.Update` + `v.Clear` behaviour and the \"two sequential calls discard the first\" rule — both change once every write goes through `writeCmdline` and the clear timer re-renders instead of clearing (Decision 9). No task and no AC covers it, and there is no `documentation-writing` task in the plan.",
+      "fix": "Add the patterns.md \"printCmdline() — Mutual Exclusion\" update to the finalization list in Acceptance Criteria (alongside the features-catalog [009] correction), or add an explicit `documentation-writing` task. Also worth recording the new `cmdlineCfg` package-level var precedent there, since Decision 1 already flags it as an ADR candidate."
+    }
+  ],
+  "summary": "Template compliance is strong: frontmatter is fully correct (created 2026-08-02, status draft, branch feature/tui-papercuts, size M matching the approved user-spec), every required section is present and substantive, Backward Compatibility is filled rather than stubbed, the Risks table is specific with real mitigations, the verification plan is concrete and grounded in the documented stand regimen, all skills and reviewers exist in the catalog and on disk, no time-based estimates appear anywhere, and 9 tasks is well under the split threshold. Three critical findings block approval, all of them wave-layout rather than content: Wave 1 has Tasks 1/2/4 sharing top/stat.go and top/stat_test.go and Tasks 1/2 additionally sharing top/config.go, top/config_view.go and top/config_view_test.go — the stat.go regions are genuinely disjoint, but since feature-execution runs a wave's teammates in parallel in one working tree with each committing its own code, disjointness does not prevent clobbered edits, and two agents adding fields to the same 31-line config struct is a near-certain collision; and the Final Wave places Task 9 in parallel with Task 8 despite Task 9 consuming Task 8's findings and both driving the same single-use ephemeral stand. The catalog does permit two pre-deploy-qa tasks, so the fix there is sequencing or merging, not reassigning skills. Six informational findings cover rationale duplicated from Decisions into task descriptions (Tasks 2, 4, 7), missing 'Alternatives considered' in six of eleven decisions, the unstated (but defensible) omission of dev-security-auditor, two small per-task-verification table gaps, and an unplanned patterns.md update that Decision 9 makes necessary."
+}

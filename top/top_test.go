@@ -34,6 +34,10 @@ func Test_app_setup(t *testing.T) {
 		assert.NotEqual(t, "", v.Query)
 	}
 
+	// setup seeds the durable refresh interval shown in the header, so it is correct before the
+	// user ever presses 'z' - without the seed the header would read "refresh: 0s".
+	assert.Equal(t, defaultRefresh, app.config.refresh)
+
 	// test with closed Postgres connection.
 	conn.Close()
 	assert.Error(t, app.setup())

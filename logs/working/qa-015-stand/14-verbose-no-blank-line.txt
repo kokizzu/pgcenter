@@ -1,0 +1,52 @@
+pgcenter: 2026-08-03 08:39:13, refresh: 1s, load average: 0.73, 0.58, 0.34                      state [ok]: /tmp:5432 postgres@ppem (ver: 18.4, up 00:15:37, recovery: f)
+    %cpu:  5.0 us,  2.0 sy,  0.0 ni, 93.0 id,  0.0 wa,  0.0 hi,  0.0 si,  0.0 st                  activity: 14/50 conns,  0/0 prepared,  8 idle,  0 idle_xact,  6 active,  0 waiting,  0 other
+ MiB mem:   2970 total,    541 free,    585 used,     1844 buff/cached                          autovacuum:  0/4 workers/max,  0 manual,  0 wraparound, 00:00:00 vac_maxtime
+MiB swap:    486 total,    486 free,      0 used,      1/0 dirty/writeback                      statements:   0 stmt/s, 0.000 stmt_avgtime, 00:08:10 xact_maxtime, 00:00:00 prep_maxtime
+  iostat:  4 devices,   1% max util,    0 rMB/s,     0 r/s,    1 wMB/s,     2 w/s                   workload:   23 tps,    0 ins/s,    0 upd/s,    0 del/s, 14499 ret/s,    0 tmp/s,   0 other
+ nicstat:  2 devices,   0% max util,    1 rMbps,    1 wMbps,    0/0 err/coll                       databases:    62.8M per  4 databases,        0 growth/s, 100.00% cache hit ratio
+filesyst: /dev/vda2 on / (ext4), 11.2G size, 3.6G used,  32% use                                     workers:  0/8 workers/max,  0/4 logical workers,  0/8 parallel workers
+                                                                                                 replication: 64.0M wal size,      n/a lag,  0/     n/a slots/retain,        0 archiving backl
+                                                                                                   bgwr/ckpt:  3/6 timed/req,   0/0 ms write/sync,  0 maxwritten
+[F:usename]
+pid       leader    cl_addr   cl_port   datname   *usename  appname   backend_type    wait_etype  wait_event  state     backend_xid  horizon_xacts  xact_age  query_age  change_age  query
+11553     11553               -1        postgres  postgres  psql      client backend  Timeout     PgSleep     active                 433            00:08:10  00:08:10   00:08:10    select pg
+11550     11550               -1        ppem      postgres  psql      client backend  Timeout     PgSleep     active                 433            00:08:10  00:08:10   00:08:10    begin; se
+11549     11549               -1        ppem      postgres  psql      client backend  Timeout     PgSleep     active                 433            00:08:10  00:08:10   00:08:10    begin; se
+11548     11548               -1        postgres  postgres  psql      client backend  Timeout     PgSleep     active                 433            00:08:10  00:08:10   00:08:10    select pg
+11547     11547               -1        ppem      postgres  psql      client backend  Timeout     PgSleep     active                 433            00:08:10  00:08:10   00:08:10    begin; se
+11751     11751               -1        ppem      postgres            client backend                          active                 0              00:00:00  00:00:00   00:00:00    SELECT pi
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

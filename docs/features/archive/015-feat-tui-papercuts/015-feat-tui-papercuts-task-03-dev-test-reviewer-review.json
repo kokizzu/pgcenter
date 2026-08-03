@@ -1,0 +1,46 @@
+{
+  "reviewer": "dev-test-reviewer",
+  "status": "passed",
+  "summary": "All five tests prescribed by the TDD Anchor exist and assert what the anchor demands; Test_setFilter was updated in place with named subcases and an explicit order-dependence comment. Every test exercises real production code with concrete assertions — no mock-only tests, no empty tests, litmus test passes on all 17 cases. I independently mutation-tested both regression guards: reverting the in-place delete to a map reassignment makes Test_clearFilters_inPlaceVisibleThroughStoredView fail (not hang), and dropping the `if n > 0` send condition makes Test_clearFilters_noActiveFilters fail in 1.00s with the intended message instead of hanging until the go test timeout — the deadline-guarded goroutine works exactly as the anchor required. Three minor findings remain: the no-filters case never asserts the handler's returned error, the two drain-goroutine tests can still hang instead of failing if the send is lost, and Test_setFilter's subcases are documented as order-dependent but are not independently runnable (`-run Test_setFilter/clear-existing` fails). None of these block the task.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "top/config_view_test.go:407-433 (Test_clearFilters_noActiveFilters)",
+      "issue": "The TDD Anchor demands that on a view without filters 'обработчик возвращает nil', but the test discards the return value: `go func() { defer close(done); _ = clearFilters(config)(nil, nil) }()`. The three sibling tests all assert.NoError on the handler; this path does not. The filters map is also only asserted empty BEFORE the handler runs (line 414) — never after, so a handler that both returned an error and mutated the map on the empty path would go unnoticed. (The anchor's own snippet used `_ =`, so this is a gap in the anchor as much as in the test.)",
+      "recommendation": "Capture the error in a variable owned by the test goroutine and assert it after the `<-done` case — closing `done` establishes the happens-before edge, so this is race-free:\n\n```go\nvar err error\ndone := make(chan struct{})\ngo func() { defer close(done); err = clearFilters(config)(nil, nil) }()\n\nselect {\ncase <-done:\n\tassert.NoError(t, err)\ncase <-time.After(time.Second):\n\tt.Fatal(\"handler blocked sending on viewCh with no filters to clear\")\n}\nassert.Empty(t, config.view.Filters) // map untouched by the handler too\n```\nDo not read `err` in the timeout branch — only the `<-done` branch is synchronized.",
+      "litmusTestFailed": false
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "top/config_view_test.go:456-473 (Test_clearFilters_clearsAll/handler-sends-view), top/config_view_test.go:480-501 (Test_clearFilters_inPlaceVisibleThroughStoredView)",
+      "issue": "Both tests arm an unguarded drain goroutine (`v := <-config.viewCh; close(config.viewCh); wg.Done()`) and then block on `wg.Wait()`. If a future regression stops the handler from sending — the exact failure mode this task is about, e.g. someone tightening the `if n > 0` condition or adding an early return — the drain goroutine never receives and `wg.Wait()` hangs until the `go test` timeout, taking down the whole `./top` package instead of failing this one case. This is the same hang-vs-fail hazard the anchor went out of its way to eliminate in the sibling Test_clearFilters_noActiveFilters, left unaddressed on the mirror path. It follows the pre-existing file pattern (Test_scrollOrthogonalToSort), which is why this is minor and not major — but those neighbours do not test a conditional send, and these two do.",
+      "recommendation": "Replace `wg`/`wg.Wait()` with a deadline in both tests, mirroring the guard already used in Test_clearFilters_noActiveFilters:\n\n```go\nreceived := make(chan view.View, 1)\ngo func() { received <- <-config.viewCh }()\n\nfn := clearFilters(config)\nassert.NoError(t, fn(nil, nil))\n\nselect {\ncase v := <-received:\n\tassert.Empty(t, v.Filters)\ncase <-time.After(time.Second):\n\tt.Fatal(\"handler did not send the cleared view on viewCh\")\n}\n```\nThis keeps the existing assertions, drops the `close(config.viewCh)` (which only ever served to panic on a double send), and turns a 300 s package-wide hang into a 1 s named failure. If keeping the file's established `sync.WaitGroup` shape is preferred, at minimum add the `time.After` deadline around `wg.Wait()`.",
+      "litmusTestFailed": false
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "top/config_view_test.go:334-358 (Test_setFilter)",
+      "issue": "Shared state between subcases. The task's acceptance criterion ('зависимость его кейсов от порядка выполнения либо устранена, либо явно задокументирована') is satisfied — the comment at lines 334-336 is accurate and load-bearing. But the anchor's preferred branch (remove the dependency) was not taken: the named `t.Run` subcases now LOOK independently addressable while they are not. Verified: `go test ./top/ -run 'Test_setFilter/clear-existing'` FAILS with `expected \"Filters: regular expression cleared\", actual \"Filters: no filter on this column\"`, because the `set` subcase that installs the filter is filtered out. Selecting a single subtest by name is a routine debugging action, so this will bite someone.",
+      "recommendation": "Make each subcase seed its own precondition and drop the shared `config`, removing the ordering constraint entirely:\n\n```go\ntestcases := []struct {\n\tname     string\n\tprefill  string // pattern installed before the case runs, \"\" for none\n\tanswer   string\n\twant     string\n}{\n\t{name: \"set\", answer: \"example\", want: \"Filters: ok\"},\n\t{name: \"clear-existing\", prefill: \"example\", answer: \"\", want: \"Filters: regular expression cleared\"},\n\t{name: \"clear-absent\", answer: \"\\n\", want: \"Filters: no filter on this column\"},\n\t{name: \"invalid-regexp\", answer: \"[0-\", want: \"Filters: error parsing regexp: missing closing ]: `[0-`\"},\n}\n\nfor _, tc := range testcases {\n\tt.Run(tc.name, func(t *testing.T) {\n\t\tconfig := newConfig()\n\t\tconfig.view = config.views[\"activity\"]\n\t\tconfig.view.OrderKey = 0\n\t\tif tc.prefill != \"\" {\n\t\t\tconfig.view.Filters[0] = regexp.MustCompile(tc.prefill)\n\t\t}\n\t\tassert.Equal(t, tc.want, setFilter(tc.answer, config.view))\n\t})\n}\n```\nThen the header comment about load-bearing order can be deleted. Add a `assert.Empty(t, config.view.Filters)` to `clear-absent` to pin that nothing was deleted on the no-op path.",
+      "litmusTestFailed": false
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "litmusTest": {
+      "checked": 17,
+      "passed": 17,
+      "failed": 0
+    },
+    "coverageAssessment": "excellent",
+    "pyramidBalance": {
+      "unit": 6,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

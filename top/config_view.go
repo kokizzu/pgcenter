@@ -26,6 +26,11 @@ func orderKeyLeft(config *config) func(_ *gocui.Gui, _ *gocui.View) error {
 			config.view.OrderKey = config.view.Ncols - 1
 		}
 
+		// Ask the next render to bring the new sort column into the visible window. The offset
+		// itself is not computed here: column widths are known only after alignment against real
+		// data, which happens on the render path.
+		config.autoScrollToOrderKey = true
+
 		config.viewCh <- config.view
 		return nil
 	}
@@ -38,6 +43,9 @@ func orderKeyRight(config *config) func(_ *gocui.Gui, _ *gocui.View) error {
 		if config.view.OrderKey >= config.view.Ncols {
 			config.view.OrderKey = 0
 		}
+
+		// See orderKeyLeft: the scroll is deferred to the next render, which knows the widths.
+		config.autoScrollToOrderKey = true
 
 		config.viewCh <- config.view
 		return nil
@@ -114,8 +122,14 @@ func switchSortOrder(config *config) func(g *gocui.Gui, _ *gocui.View) error {
 
 // setFilter adds pattern for filtering values in the current column.
 func setFilter(answer string, view view.View) string {
-	// Clear used pattern if empty string is entered.
+	// Clear used pattern if empty string is entered. Report success only when a filter
+	// has really been removed — 'delete' on a missing key is a no-op and reporting a
+	// successful clear when nothing was cleared misleads the user.
 	if answer == "\n" || answer == "" {
+		if !isFilterActive(view.Filters[view.OrderKey]) {
+			return "Filters: no filter on this column"
+		}
+
 		delete(view.Filters, view.OrderKey)
 		return "Filters: regular expression cleared"
 	}
@@ -128,6 +142,67 @@ func setFilter(answer string, view view.View) string {
 
 	view.Filters[view.OrderKey] = re
 	return "Filters: ok"
+}
+
+// isFilterActive reports whether the passed pattern is an active filter.
+// The predicate must stay identical to the one used by printHeaderCell when marking
+// a filtered column with '*' — otherwise the marker, the counter of cleared filters
+// and the cmdline filter indicator could disagree about what "filtered" means.
+func isFilterActive(re *regexp.Regexp) bool {
+	return re != nil && re.String() != ""
+}
+
+// activeFilterCount returns the number of active filters in the passed map.
+// A nil map is valid input and yields zero.
+func activeFilterCount(filters map[int]*regexp.Regexp) int {
+	var n int
+	for _, re := range filters {
+		if isFilterActive(re) {
+			n++
+		}
+	}
+	return n
+}
+
+// clearAllFilters removes all active filters of the passed view and returns the message
+// for cmdline and the number of removed filters. Filters are deleted in place: the map
+// header is shared with the view's copy stored in config.views, so assigning a fresh map
+// would leave the stored copy with the old filters and they would come back on the next
+// view switch.
+//
+// Only active entries are counted and removed, which keeps the reported number equal to
+// the number of '*' markers the user actually sees. This relies on the invariant that
+// setFilter never stores an inert entry (a nil or empty pattern): an empty answer takes
+// the clear branch above, so an inactive entry cannot appear in the map in the first place.
+func clearAllFilters(v view.View) (string, int) {
+	n := activeFilterCount(v.Filters)
+	if n == 0 {
+		return "Filters: no active filters", 0
+	}
+
+	for k, re := range v.Filters {
+		if isFilterActive(re) {
+			delete(v.Filters, k)
+		}
+	}
+
+	return fmt.Sprintf("Filters: cleared %d filter(s)", n), n
+}
+
+// clearFilters removes all filters of the current view at once.
+func clearFilters(config *config) func(g *gocui.Gui, _ *gocui.View) error {
+	return func(g *gocui.Gui, _ *gocui.View) error {
+		msg, n := clearAllFilters(config.view)
+
+		// Notify the stats goroutine only when something has been removed. viewCh is
+		// unbuffered and nobody is expected to read an update that changes nothing.
+		if n > 0 {
+			config.viewCh <- config.view
+		}
+
+		printCmdline(g, "%s", msg)
+		return nil
+	}
 }
 
 // switchViewTo switches from current view to requested using high-level logic.
@@ -240,7 +315,8 @@ func progressNextView(current string) string {
 func viewSwitchHandler(config *config, c string) {
 	config.views[config.view.Name] = config.view
 	config.view = config.views[c]
-	config.scrollOffset = 0 // horizontal scroll is ephemeral; reset on view switch
+	config.scrollOffset = 0             // horizontal scroll is ephemeral; reset on view switch
+	config.autoScrollToOrderKey = false // a pending auto-scroll must not fire on the new screen
 	config.viewCh <- config.view
 }
 
@@ -255,6 +331,10 @@ func switchViewToProcPidStat(app *app) func(g *gocui.Gui, _ *gocui.View) error {
 		// Horizontal scroll is ephemeral; reset it when entering the per-process
 		// screen. This path bypasses viewSwitchHandler, so the reset is done here.
 		app.config.scrollOffset = 0
+
+		// Same for a pending auto-scroll request: it belongs to the outgoing screen's sort
+		// column. Reset before the local-mode guard below, so the switch cannot leave it armed.
+		app.config.autoScrollToOrderKey = false
 
 		if !app.db.Local {
 			printCmdline(g, "Per-process stats available in local mode only")
@@ -454,6 +534,10 @@ func changeRefresh(answer string, config *config) string {
 	config.view.Refresh = time.Duration(interval) * time.Second
 	config.viewCh <- config.view
 	config.view.Refresh = 0
+
+	// Keep the durable copy in sync - it is what the sysstat header displays, since view.Refresh is
+	// zeroed above. Written only here, on the success path, so an invalid input never changes it.
+	config.refresh = time.Duration(interval) * time.Second
 
 	return "Refresh: ok"
 }

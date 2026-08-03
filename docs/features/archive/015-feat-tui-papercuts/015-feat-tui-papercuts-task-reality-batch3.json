@@ -1,0 +1,114 @@
+{
+  "validator": "dev-reality-checker",
+  "feature_base": "docs/features/015-feat-tui-papercuts/015-feat-tui-papercuts",
+  "tasks_checked": ["07", "08", "09"],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": "09",
+      "issue": "Dependencies claims «Живой PostgreSQL не нужен: ни один unit-тест фичи его не требует» (task-09:126), but the gate this task actually runs is `make test` = `go test -race -p 1 -timeout 300s ./...` (Makefile:33-36), and top/ already contains tests that open a real connection: top/top_test.go:10,19, top/signal_test.go:13,33,58,82, top/reload_test.go:19, top/reset_test.go:10, top/report_test.go:11 all call postgres.NewTestConnect(). The justification clause (the feature's own new unit tests need no PG) is true, but the unscoped headline is false for the whole-repo suite the AC demands, and a QA agent reading it literally may not provision the clusters and then mis-attribute connection failures to the feature.",
+      "fix": "Rewrite the bullet as: «Новым unit-тестам фичи живой PostgreSQL не нужен, но `make test` гоняет весь репозиторий, где top/top_test.go, signal_test.go, reload_test.go, reset_test.go, report_test.go используют postgres.NewTestConnect() — тестовые кластеры (порты 21914-21919) должны быть подняты до прогона». Add the clusters to the environment prerequisites next to Go 1.25+/golangci-lint/gosec/govulncheck."
+    },
+    {
+      "severity": "minor",
+      "category": "hallucination",
+      "task": "07",
+      "issue": "The task treats `printCmdlinePersist` as a landed API of Task 5 and names it five times (Description, What-to-do step 4, Context Files, Details/Dependencies, the double-prefix trap). The name does exist in the tech-spec («What we're building/modifying») and in code-research §10.3 with the signature `printCmdlinePersist(g *gocui.Gui, format string, s ...any)`, so it is not invented — but task-05, the task that actually lands it, never names it: its step 4 only says «рядом появляется вариант, пишущий без таймера», and step 7 says «заменить прямую запись в буфер вьюхи cmdline (top/dialog.go:92) вызовом нового писателя». So the concrete identifier task 07 depends on is not fixed anywhere the implementer of task 5 is required to follow.",
+      "fix": "Either pin the name in task-05 step 4/7 (`printCmdlinePersist`, signature mirroring `printCmdline`), or keep task 07's already-present hedge as the only reference and phrase steps 4 and the AC as «писатель без таймера, приземлённый задачей 5 (в спеке — printCmdlinePersist)». The task's existing Context Files note («авторитет здесь у приземлённого кода») should be repeated at What-to-do step 4, where the name is used prescriptively."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": "07",
+      "issue": "Context Files cites «критерии приёмки блока „Диалоги“ (`:294-299`)» in the user-spec. The Диалоги block actually spans 015-feat-tui-papercuts.md:287-299 (header 287, five criteria at 288-291, 292-293, 294-296, 297-298, 299). The cited range starts mid-block and excludes the two criteria this task is primarily built around: alignment + prompt-truncation (288-291) and prompt/field on one line in verbose (292-293).",
+      "fix": "Change the anchor to `:287-299`."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": "08",
+      "issue": "Step 20 and its AC turn on a ±1 row boundary (`-y 12` verbose ON vs `-y 11` fallback), but the geometry is asserted from the `tmux new-session -x/-y` arguments alone. Whether the pane the binary sees is exactly 12 rows depends on the tmux version's handling of `default-size`/status line for a detached session; a one-row discrepancy silently converts the boundary test into a test of the wrong threshold, and the failure looks like a task-01 defect.",
+      "fix": "After creating each session, record `tmux display -p -t cap '#{window_height} #{pane_height} #{pane_width}'` in the report artifacts and assert it equals the intended geometry before running the checks. Also prefer `tmux send-keys -t cap -l '\\'` (literal flag) for the backslash and brackets in step 9/18, so a key-name lookup can never swallow the keypress."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": "08",
+      "issue": "The task loads `/skill:pre-deploy-qa` and instructs «Produce the stand report per the `pre-deploy-qa` skill» (step 23), but that skill is built around a different run: Phase 1 Environment Rebuild, Phase 2 Test Suite, Phase 3 Acceptance Criteria, Phase 4 Coverage, with a hard-wired output path `logs/working/qa-report.json` (SKILL.md:118) and a decisions.md entry linking to it (SKILL.md:165). Task 08 correctly redirects the path to logs/working/qa-015-stand/report.json, but the remaining phases do not describe a stand run, so the agent gets two conflicting sets of instructions about what the report contains.",
+      "fix": "Say explicitly which parts of the skill apply (report JSON shape and severity classification) and which are superseded here (Phases 1-2, the output path, the decisions.md link target). Everything else in the run is already specified by this task's own steps."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": "09",
+      "issue": "Task 08's Details asserts that `logs/working/qa-report.json` «is git-tracked and belongs to Task 9 (final pre-deploy QA)» — verified correct (`git ls-files logs` → logs/working/qa-report.json; .gitignore contains only /bin/). But task 09 itself never names that path: its Details say only «Результат задачи — отчёт в 015-...-decisions.md и вердикт в финальном сообщении агента». The path is reserved by the pre-deploy-qa skill rather than by the task, so the two tasks' report paths do not collide, but the claim task 08 relies on is not written down in task 09.",
+      "fix": "Add to task 09 Details: «Отчёт скилла — `logs/working/qa-report.json` (git-tracked, путь задан pre-deploy-qa SKILL.md:118); стендовые артефакты задачи 8 лежат отдельно в `logs/working/qa-015-stand/` и не перезаписываются»."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": "09",
+      "issue": "All Context Files links and the Post-completion link are written repo-root-relative (`docs/features/015-feat-tui-papercuts/...`, `.claude/skills/project-knowledge/...`, `top/`, `Makefile`, `docs/features-catalog.md`, `docs/tech-debt.md`) from a file that already lives in docs/features/015-feat-tui-papercuts/, so every link resolves to a non-existent path. Tasks 07 and 08 use the correct forms (bare filename for sibling artifacts, ../../../ for repo files). The referenced files themselves all exist.",
+      "fix": "Use `015-feat-tui-papercuts.md` style for sibling artifacts and `../../../top/`, `../../../Makefile`, `../../../docs/features-catalog.md`, `../../../.claude/skills/project-knowledge/*.md` for repo files, matching tasks 07/08."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": "09",
+      "issue": "Frontmatter still carries the task-template comments (`# planned -> in_progress -> done`, `# ID задач-зависимостей (строки: [\"01\", \"02\"])`, `# МАССИВ скиллов для загрузки`, `# имя агента-исполнителя (опционально…)`). Tasks 07 and 08 have clean frontmatter. Also `verify: bash` here is a bare token whose real content sits in a trailing comment, while 07/08 use the quoted-string form.",
+      "fix": "Strip the template comments and move the verify detail into the value: `verify: \"bash — make test, make lint, make vuln; every user-spec criterion walked\"`."
+    }
+  ],
+  "verified_claims": {
+    "task_07": [
+      "top/dialog.go:79 — `g.SetView(\"dialog\", len(prompt)-1, 3, maxX-1, 5)` present verbatim.",
+      "dialogSetMask prompt (dialog.go:36) is exactly 93 characters → x0 = 92; at maxX=80, x1 = 79, so x0 >= x1.",
+      "gocui v0.5.0 gui.go:130-133 — SetView rejects `x0 >= x1 || y0 >= y1` with errors.New(\"invalid dimensions\"); dialog.go:80-85 only tolerates gocui.ErrUnknownView, so the error is returned from the handler.",
+      "Error path confirmed end to end: gui.go MainLoop returns any handler error (MainLoop → handleEvent → onKey → execKeybindings), and top/ui.go:45-67 records it, cancels ctx, waits for doWork and re-creates the Gui — the UI teardown the task describes is real.",
+      "Breakage thresholds match the key map exactly: K=dialogTerminateGroup len 60, k=dialogCancelGroup 56, A=dialogChangeAge 42, z=dialogChangeRefresh 35, R=dialogPgReload 34 (keybindings.go:59,65,66,67,69); breakage condition maxX <= len(prompt) reproduces every quoted threshold.",
+      "`n` → dialogSetMask bound on view \"sysstat\" (keybindings.go:63); default view is activity (top/top.go:69), and the dialog.go:51-53 guard passes there — reproducible right after start.",
+      "topBandLayout (top/layout.go:33) returns compactCmdlineY0=3 / compactCmdlineY1=5 (layout.go:8-9,35) in compact mode — the compact path is byte-identical; in verbose it returns cmdlineY0=8, cmdlineY1=10 (tallest=9, bandTop=8), and Task 1 changes only dbstatY0, so 8/10 stay valid after Task 1 lands.",
+      "Zero-size guard exists and is documented at top/ui.go:111-115 (`Screen dimensions could be equal to zero after executing external programs like pager/editor/psql`).",
+      "gocui usable width is x1-x0-1 (view.go:114-116), so the task's clamp arithmetic (`x0 <= maxX-2-minWidth` vs budget-derived `x0 <= maxX-minDialogInputWidth-2`) is exact — the two bounds coincide.",
+      "Double-prefix trap is consistent with task-05 step 4: the shared writer core composes the line inside g.Update via the composer, so passing a pre-composed line would duplicate the token prefix; passing the truncated prompt is the correct form.",
+      "The prompt truncated against budget `maxX - minDialogInputWidth - 1` cannot be re-truncated by the writer composing at full width, so «посчитали == нарисуем» holds by construction.",
+      "Precedents exist: firstTickHint at top/stat.go:149, topBandLayout at top/layout.go:33, top/layout_test.go present; top/dialog_test.go absent, so the file is genuinely new.",
+      "dialogFinish's strings.TrimPrefix(v.Buffer(), dialogPrompts(...)) at dialog.go:118 is indeed dead (the prompt is printed to the cmdline view, not into the dialog view) — leaving it untouched is correct and stays correct after truncation.",
+      "patterns.md anchors exact: Testable TUI Rendering :52, Verbose display-mode toggle :62, Error Wrapping :129, printCmdline() — Mutual Exclusion :220, Naming Conventions :284.",
+      "Wave/file disjointness holds: task 6 owns config.go, top.go, ui.go, config_view.go, stat.go + tests (tech-spec wave-partition table); task 7 owns dialog.go, dialog_test.go only. depends_on [\"01\",\"05\"] correctly declares both the layout fix and the composer/dialog.go:92 edit.",
+      "`strings` already imported in dialog.go; `unicode/utf8` is stdlib — no new modules."
+    ],
+    "task_08": [
+      "Every key in the run is verified against top/keybindings.go: / :60, \\\\ (new, Task 3, absent today as expected), z :69, A :67, n :63, m :64, v :57, S :58, [ :26, ] :27, ←/→ :22-23, < :28, h :76 / F1 :77 (Esc :78 / q :79 close), d :31, t :34, i :35, s :36, a :41, Esc/Enter on dialog :70-71, Ctrl-C/Ctrl-Q :19-20.",
+      "The state-mask dialog is reachable on the default screen: bindings are registered on \"sysstat\" (the current view), and app.setup() sets app.config.view = views[\"activity\"] (top/top.go:69), which passes the dialog.go:51-53 activity-only guard.",
+      "Report path logs/working/qa-015-stand/report.json does not collide with task 09's: logs/working/qa-report.json is git-tracked (git ls-files) and is the hard-wired output of the pre-deploy-qa skill (SKILL.md:118).",
+      "logs/working/ is genuinely not in .gitignore (.gitignore contains only /bin/), so the captures do show up as untracked — the warning is accurate.",
+      "The task instructs no source edits anywhere; step 24 and the AC forbid it explicitly, and the ownership map matches the tech-spec wave-partition file table task by task.",
+      "The tech-spec does state «E2E tests: None automated» with the stand run as the replacement (Wave 4), matching the task's framing.",
+      "depends_on [\"06\",\"07\"] transitively covers 1-5: 06←[04,05], 04←[02,03], 07←[01,05]. The «Tasks 1-5 are transitively complete» claim holds.",
+      "The four stand-only checks map to real, currently-unreachable-by-unit-test surfaces (bold SGR, blank row, narrow-terminal auto-scroll, 93-char dialog at 80 columns), and the user-spec «Агент проверяет» table (015-feat-tui-papercuts.md:422-441) lists the same checks with the same capture modes and geometries.",
+      "The header row count (4 compact / 7 verbose) and the three exact filter message texts match the user-spec criteria at :280 and :273-276."
+    ],
+    "task_09": [
+      "User-spec has exactly 27 `- [ ]` checkboxes, all inside «Критерии приёмки» (:245-303), and the group breakdown is exactly the one cited: автоскролл 5 (:248-252), индикатор 9 (:255-269), сброс 2 (:272-276), интервал 2 (:279-280), verbose 3 (:283-285), диалоги 5 (:288-299), справка 1 (:302).",
+      "Tech-spec has exactly 11 `- [ ]` checkboxes, all inside «Acceptance Criteria» (:502-526) — the cited count is right, and the two finalization doc fixes plus the one tech-debt entry are the last three of them.",
+      "44 printCmdline call sites confirmed (45 grep hits in top/ minus the definition at ui.go:207).",
+      "The four pure functions named (composeCmdline, filterToken, scrollOffsetFor, dialogInputX0) match the tech-spec Testing Strategy list.",
+      "ansiEscape / visibleRuneLen exist as helpers at top/stat_test.go:937-944 and are already used by the width-invariant assertion at :984-986 — «починить через существующие хелперы, не добавлять второй стриппер» is actionable as written.",
+      "Test_scrollOrthogonalToSort exists (top/config_view_test.go:147); Test_switchViewToProcPidStatResetsScrollOffset exists (:219).",
+      "docs/features-catalog.md:189 does carry [009]'s «no auto-scroll to the sort column» statement; docs/tech-debt.md exists.",
+      "The task claims no fixes anywhere: «Задача ничего не чинит», AC «Никакой код в этой задаче не изменён», and Reviewers: none — consistent with task 08's same rule.",
+      "Decisions 10 and 14 referenced for the timer race are the correct decision numbers in the tech-spec (:251, :313)."
+    ]
+  },
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 44,
+    "issues_found": 8,
+    "critical": 0,
+    "major": 1,
+    "minor": 7
+  }
+}

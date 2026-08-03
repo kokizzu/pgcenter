@@ -172,7 +172,7 @@ func printStat(app *app, s stat.Stat, props stat.PostgresProperties) {
 			return fmt.Errorf("set focus on sysstat view failed: %w", err)
 		}
 		v.Clear()
-		err = printSysstat(v, s, app.config.verbose, app.db.Local, props.DataDirectory)
+		err = printSysstat(v, s, app.config.verbose, app.db.Local, props.DataDirectory, app.config.refresh)
 		if err != nil {
 			return fmt.Errorf("print sysstat failed: %w", err)
 		}
@@ -255,8 +255,8 @@ func printStat(app *app, s stat.Stat, props stat.PostgresProperties) {
 // printSysstat prints system stats on UI. It is a thin wrapper that delegates to the
 // writer-based renderSysstat (*gocui.View implements io.Writer), so the render core can be
 // unit-tested without a live terminal — mirroring the printDbstat → renderDbstat precedent.
-func printSysstat(v *gocui.View, s stat.Stat, verbose bool, local bool, dataDir string) error {
-	return renderSysstat(v, s, verbose, local, dataDir)
+func printSysstat(v *gocui.View, s stat.Stat, verbose bool, local bool, dataDir string, refresh time.Duration) error {
+	return renderSysstat(v, s, verbose, local, dataDir, refresh)
 }
 
 // renderSysstat is the writer-based core of printSysstat: it prints the system stats to w.
@@ -264,13 +264,17 @@ func printSysstat(v *gocui.View, s stat.Stat, verbose bool, local bool, dataDir 
 // full B/N/F side panels: the iostat/nicstat rows select the max-%util device reusing the struct
 // math already computed by count*Usage (never recomputed), and filesyst shows the data_directory's
 // filesystem. local/dataDir drive the filesyst mount-prefix match (data_directory symlinks are
-// resolved only when local).
-func renderSysstat(w io.Writer, s stat.Stat, verbose bool, local bool, dataDir string) error {
+// resolved only when local). refresh is the current refresh interval, shown on line 1 so the value
+// set through the 'z' dialog stays visible after the dialog closes.
+func renderSysstat(w io.Writer, s stat.Stat, verbose bool, local bool, dataDir string, refresh time.Duration) error {
 	var err error
 
-	/* line1: current time and load average */
-	_, err = fmt.Fprintf(w, "pgcenter: %s, load average: %.2f, %.2f, %.2f\n",
-		time.Now().Format("2006-01-02 15:04:05"),
+	/* line1: current time, refresh interval and load average */
+	// The interval is printed as whole seconds explicitly: Duration.String() would render 60s as
+	// "1m0s" and 300s (the validated maximum) as "5m0s". The conversion lives here, not at the call
+	// site, so there is exactly one of it.
+	_, err = fmt.Fprintf(w, "pgcenter: %s, refresh: %ds, load average: %.2f, %.2f, %.2f\n",
+		time.Now().Format("2006-01-02 15:04:05"), int(refresh/time.Second),
 		s.LoadAvg.One, s.LoadAvg.Five, s.LoadAvg.Fifteen)
 	if err != nil {
 		return err
@@ -325,6 +329,15 @@ const cacheHitWidth = 7
 // the trailing label stays static across ticks and between the value and n/a states.
 const sizeFieldWidth = 8
 
+// bold wraps a rendered value in the same SGR sequence the compact summary rows use for their
+// values (SGR 37 = white fg, 1 = bold; see the %cpu row at the top of renderSysstat). It exists as
+// a single helper so the escape pair is not retyped at every verbose value site — and so the
+// degraded renderings can stay deliberately unwrapped: bold must read as "there is a real number
+// here", so the n/a sentinels (naLiteral, naReserve, including the one inside naInt) and the
+// filesystem identifier fields (device, mountpoint, fstype) never go through it. Composite A/B
+// values are wrapped as ONE span, matching the activity/autovacuum rows.
+func bold(s string) string { return "\033[37;1m" + s + "\033[0m" }
+
 // renderSysstatVerbose appends the three verbose system rows to w. Each row degrades independently:
 // no active device / first tick / no mount match renders n/a for that row without aborting the others.
 func renderSysstatVerbose(w io.Writer, s stat.Stat, local bool, dataDir string) error {
@@ -333,19 +346,21 @@ func renderSysstatVerbose(w io.Writer, s stat.Stat, local bool, dataDir string) 
 	// delta fields render n/a rather than a misleading zero — NOT keyed on len(slice) (the slice is
 	// populated zero-delta on the first tick).
 	if idx := maxUtilDisk(s.Diskstats); idx < 0 || s.VerboseFirstTick {
+		// The device count is a real number even in this branch, so it is bold here too — the one
+		// place where "degraded branch" and "plain" come apart. The delta fields are n/a: plain.
 		if _, err := fmt.Fprintf(w, "  iostat: %s devices, %s max util, %s, %s, %s, %s\n",
-			pretty.ReserveWidth(activeDiskCount(s.Diskstats), 2), naLiteral, naLiteral, naLiteral, naLiteral, naLiteral); err != nil {
+			bold(pretty.ReserveWidth(activeDiskCount(s.Diskstats), 2)), naLiteral, naLiteral, naLiteral, naLiteral, naLiteral); err != nil {
 			return err
 		}
 	} else {
 		d := s.Diskstats[idx]
 		if _, err := fmt.Fprintf(w, "  iostat: %s devices, %s%% max util, %s, %s r/s, %s, %s w/s\n",
-			pretty.ReserveWidth(activeDiskCount(s.Diskstats), 2),
-			pretty.ReserveWidth(pretty.Ceil(d.Util), 3),
-			pretty.RateUnitPrefixed(d.Rsectors, pretty.FamilyDisk, "r", 4),
-			pretty.ReserveWidth(pretty.Ceil(d.Rcompleted), 5),
-			pretty.RateUnitPrefixed(d.Wsectors, pretty.FamilyDisk, "w", 4),
-			pretty.ReserveWidth(pretty.Ceil(d.Wcompleted), 5)); err != nil {
+			bold(pretty.ReserveWidth(activeDiskCount(s.Diskstats), 2)),
+			bold(pretty.ReserveWidth(pretty.Ceil(d.Util), 3)),
+			bold(pretty.RateUnitPrefixed(d.Rsectors, pretty.FamilyDisk, "r", 4)),
+			bold(pretty.ReserveWidth(pretty.Ceil(d.Rcompleted), 5)),
+			bold(pretty.RateUnitPrefixed(d.Wsectors, pretty.FamilyDisk, "w", 4)),
+			bold(pretty.ReserveWidth(pretty.Ceil(d.Wcompleted), 5))); err != nil {
 			return err
 		}
 	}
@@ -353,19 +368,23 @@ func renderSysstatVerbose(w io.Writer, s stat.Stat, local bool, dataDir string) 
 	// nicstat row: select the max-Utilization interface among active ones (Packets != 0), the same
 	// set printNetdev shows. rMbps/wMbps replicate printNetdev's print-time Rbytes/1024/128 exactly.
 	if idx := maxUtilNet(s.Netdevs); idx < 0 || s.VerboseFirstTick {
+		// As in the iostat row: the interface count is real here, the delta fields are not.
 		if _, err := fmt.Fprintf(w, " nicstat: %s devices, %s max util, %s, %s, %s err/coll\n",
-			pretty.ReserveWidth(activeNetCount(s.Netdevs), 2), naLiteral, naLiteral, naLiteral, naLiteral); err != nil {
+			bold(pretty.ReserveWidth(activeNetCount(s.Netdevs), 2)), naLiteral, naLiteral, naLiteral, naLiteral); err != nil {
 			return err
 		}
 	} else {
 		n := s.Netdevs[idx]
-		if _, err := fmt.Fprintf(w, " nicstat: %s devices, %s%% max util, %s, %s, %s/%s err/coll\n",
-			pretty.ReserveWidth(activeNetCount(s.Netdevs), 2),
-			pretty.ReserveWidth(pretty.Ceil(n.Utilization), 3),
-			pretty.RateUnitPrefixed(n.Rbytes/1024/128, pretty.FamilyNet, "r", 4),
-			pretty.RateUnitPrefixed(n.Tbytes/1024/128, pretty.FamilyNet, "w", 4),
+		// err/coll is a composite value: one span for both sides, as in the activity row.
+		errColl := fmt.Sprintf("%s/%s",
 			pretty.ReserveWidth(pretty.Ceil(n.Rerrs+n.Terrs), 4),
-			strconv.Itoa(pretty.Ceil(n.Tcolls))); err != nil {
+			strconv.Itoa(pretty.Ceil(n.Tcolls)))
+		if _, err := fmt.Fprintf(w, " nicstat: %s devices, %s%% max util, %s, %s, %s err/coll\n",
+			bold(pretty.ReserveWidth(activeNetCount(s.Netdevs), 2)),
+			bold(pretty.ReserveWidth(pretty.Ceil(n.Utilization), 3)),
+			bold(pretty.RateUnitPrefixed(n.Rbytes/1024/128, pretty.FamilyNet, "r", 4)),
+			bold(pretty.RateUnitPrefixed(n.Tbytes/1024/128, pretty.FamilyNet, "w", 4)),
+			bold(errColl)); err != nil {
 			return err
 		}
 	}
@@ -373,9 +392,11 @@ func renderSysstatVerbose(w io.Writer, s stat.Stat, local bool, dataDir string) 
 	// filesyst row: the data_directory's filesystem by longest mount-prefix. Any match failure
 	// (no mount, empty data_directory, EvalSymlinks failure) renders n/a.
 	if fs, ok := stat.MatchDataDirFs(dataDir, s.Fsstats, local); ok {
-		if _, err := fmt.Fprintf(w, "filesyst: %s on %s (%s), %s size, %s used, %3.0f%% use\n",
+		// device/mountpoint/fstype are identifiers, not values — plain, like the panels' line 1.
+		if _, err := fmt.Fprintf(w, "filesyst: %s on %s (%s), %s size, %s used, %s%% use\n",
 			fs.Mount.Device, truncate(fs.Mount.Mountpoint, 10), fs.Mount.Fstype,
-			pretty.Size(fs.Size), pretty.Size(fs.Used), fs.Pused); err != nil {
+			bold(pretty.Size(fs.Size)), bold(pretty.Size(fs.Used)),
+			bold(fmt.Sprintf("%3.0f", fs.Pused))); err != nil {
 			return err
 		}
 	} else {
@@ -516,11 +537,15 @@ func naReserve(width int) string {
 // naInt renders an int rate field as a fixed-width number, or n/a in the same reserved width when
 // this tick has no prev snapshot (hasPrev == false) — so a first-tick delta is distinguishable from
 // a real zero AND the n/a occupies the value's column slot, keeping the trailing label static.
+//
+// The bold lives inside the value branch on purpose: the sentinel path stays deliberately
+// unwrapped (bold means "there is a real number here"), and putting the decision here covers every
+// call site without touching any of them.
 func naInt(v int64, width int, hasPrev bool) string {
 	if !hasPrev {
 		return naReserve(width)
 	}
-	return pretty.ReserveWidth(int(v), width)
+	return bold(pretty.ReserveWidth(int(v), width))
 }
 
 // renderPgstatVerbose appends the five verbose pgstat rows from the PgstatOverview aggregate. Each
@@ -538,11 +563,13 @@ func renderPgstatVerbose(w io.Writer, o stat.PgstatOverview, props stat.Postgres
 
 	// databases row. Size/growth are n/a when the privileged aggregate failed; cache hit ratio is
 	// n/a on the first tick or when there was no I/O in the interval.
+	// Bold is applied where the number is produced (inside the availability branch), never to the
+	// variable afterwards — that keeps the naReserve default plain automatically.
 	size, growth := naReserve(sizeFieldWidth), naReserve(sizeFieldWidth)
 	if o.TotalSizeValid {
-		size = pretty.SizeWidth(float64(o.TotalSize), sizeFieldWidth)
+		size = bold(pretty.SizeWidth(float64(o.TotalSize), sizeFieldWidth))
 		if hp {
-			growth = pretty.SizeWidth(float64(o.GrowthPerSec), sizeFieldWidth)
+			growth = bold(pretty.SizeWidth(float64(o.GrowthPerSec), sizeFieldWidth))
 		}
 	}
 	// cache hit ratio is the trailing field before its label; reserve a fixed width for the value
@@ -550,18 +577,22 @@ func renderPgstatVerbose(w io.Writer, o stat.PgstatOverview, props stat.Postgres
 	// the same 7) is a drop-in and the "cache hit ratio" label never moves between ticks.
 	hit := naReserve(cacheHitWidth)
 	if o.CacheHitRatioValid {
-		hit = fmt.Sprintf("%6.2f%%", o.CacheHitRatio)
+		hit = bold(fmt.Sprintf("%6.2f%%", o.CacheHitRatio))
 	}
 	if _, err := fmt.Fprintf(w, "   databases: %s per %s databases, %s growth/s, %s cache hit ratio\n",
-		size, pretty.ReserveWidth(int(o.DatabasesCount), 2), growth, hit); err != nil {
+		size, bold(pretty.ReserveWidth(int(o.DatabasesCount), 2)), growth, hit); err != nil {
 		return err
 	}
 
 	// workers row. Active counts / GUC limits (umbrella max_worker_processes, logical, parallel).
-	if _, err := fmt.Fprintf(w, "     workers: %s/%d workers/max, %s/%d logical workers, %s/%d parallel workers\n",
-		pretty.ReserveWidth(o.WorkersUmbrellaActive, 2), props.GucMaxWorkerProcesses,
-		pretty.ReserveWidth(o.WorkersLogicalActive, 2), props.GucMaxLogicalReplicationWorkers,
-		pretty.ReserveWidth(o.WorkersParallelActive, 2), props.GucMaxParallelWorkers); err != nil {
+	// Each active/max pair is one bold span, matching the autovacuum row's workers/max.
+	workers := func(active, guc int) string {
+		return bold(fmt.Sprintf("%s/%d", pretty.ReserveWidth(active, 2), guc))
+	}
+	if _, err := fmt.Fprintf(w, "     workers: %s workers/max, %s logical workers, %s parallel workers\n",
+		workers(o.WorkersUmbrellaActive, props.GucMaxWorkerProcesses),
+		workers(o.WorkersLogicalActive, props.GucMaxLogicalReplicationWorkers),
+		workers(o.WorkersParallelActive, props.GucMaxParallelWorkers)); err != nil {
 		return err
 	}
 
@@ -569,20 +600,22 @@ func renderPgstatVerbose(w io.Writer, o stat.PgstatOverview, props stat.Postgres
 	// (no standby, no slots, archive_mode=off / missing privilege).
 	lag := naReserve(sizeFieldWidth)
 	if o.LagBytesValid {
-		lag = pretty.SizeWidth(float64(o.LagBytes), sizeFieldWidth)
+		lag = bold(pretty.SizeWidth(float64(o.LagBytes), sizeFieldWidth))
 	}
 	retain := naReserve(sizeFieldWidth)
 	if o.RetainedValid {
-		retain = pretty.SizeWidth(float64(o.RetainedBytes), sizeFieldWidth)
+		retain = bold(pretty.SizeWidth(float64(o.RetainedBytes), sizeFieldWidth))
 	}
 	backlog := naReserve(sizeFieldWidth)
 	if o.ArchivingBacklogValid {
-		backlog = pretty.SizeWidth(float64(o.ArchivingBacklog), sizeFieldWidth)
+		backlog = bold(pretty.SizeWidth(float64(o.ArchivingBacklog), sizeFieldWidth))
 	}
-	if _, err := fmt.Fprintf(w, " replication: %s wal size, %s lag, %s/%s slots/retain, %s archiving backlog, %d/%d senders/receivers\n",
-		pretty.Size(float64(o.WalSize)), lag,
-		pretty.ReserveWidth(int(o.SlotsCount), 2), retain,
-		backlog, o.Senders, o.Receivers); err != nil {
+	// slots/retain is the one composite wrapped as TWO spans: an always-real count next to a size
+	// that can degrade to n/a — a single span would drag the sentinel into the bold.
+	if _, err := fmt.Fprintf(w, " replication: %s wal size, %s lag, %s/%s slots/retain, %s archiving backlog, %s senders/receivers\n",
+		bold(pretty.Size(float64(o.WalSize))), lag,
+		bold(pretty.ReserveWidth(int(o.SlotsCount), 2)), retain,
+		backlog, bold(fmt.Sprintf("%d/%d", o.Senders, o.Receivers))); err != nil {
 		return err
 	}
 
@@ -593,13 +626,15 @@ func renderPgstatVerbose(w io.Writer, o stat.PgstatOverview, props stat.Postgres
 	// label is governed by that tight composite, not by a fixed-reserve n/a — left as-is.
 	writeMs, syncMs, maxw := naLiteral, naLiteral, naLiteral
 	if hp {
-		writeMs = pretty.ReserveWidth(pretty.Ceil(o.CkptWriteMsDelta), 3)
-		syncMs = strconv.Itoa(pretty.Ceil(o.CkptSyncMsDelta)) // tight post-slash value
-		maxw = pretty.ReserveWidth(int(o.MaxWrittenDelta), 2)
+		writeMs = bold(pretty.ReserveWidth(pretty.Ceil(o.CkptWriteMsDelta), 3))
+		syncMs = bold(strconv.Itoa(pretty.Ceil(o.CkptSyncMsDelta))) // tight post-slash value
+		maxw = bold(pretty.ReserveWidth(int(o.MaxWrittenDelta), 2))
 	}
-	if _, err := fmt.Fprintf(w, "   bgwr/ckpt: %s/%s timed/req, %s/%s ms write/sync, %s maxwritten\n",
-		pretty.ReserveWidth(int(o.CkptTimed), 2), strconv.Itoa(int(o.CkptReq)),
-		writeMs, syncMs, maxw); err != nil {
+	// timed/req is one span (both sides are always real); write/sync stays two adjacent spans
+	// because both sides degrade together to their own plain n/a.
+	timedReq := fmt.Sprintf("%s/%s", pretty.ReserveWidth(int(o.CkptTimed), 2), strconv.Itoa(int(o.CkptReq)))
+	if _, err := fmt.Fprintf(w, "   bgwr/ckpt: %s timed/req, %s/%s ms write/sync, %s maxwritten\n",
+		bold(timedReq), writeMs, syncMs, maxw); err != nil {
 		return err
 	}
 
@@ -669,6 +704,22 @@ func printDbstat(v *gocui.View, config *config, s stat.Stat) error {
 // resolves the terminal width from the gocui view) so the render can be unit-tested
 // without a live terminal.
 func renderDbstat(w io.Writer, config *config, s stat.Stat, termWidth int) error {
+	// One-shot auto-scroll: a sort-column change asked for that column to be brought into the
+	// window. It is consumed here rather than in the key handler because column widths are known
+	// only after alignViewToResult has run against real data (printDbstat). The flag is cleared
+	// BEFORE the offset is recomputed, which makes the request strictly one-shot even if the
+	// computation returns early — so manual [ / ] scrolling afterwards is never undone by the next
+	// refresh ([009] invariant). Note that printDbstat returns early on an error frame without
+	// reaching this point: a pending request simply survives that frame and fires on the next good
+	// one, which is the desired behaviour.
+	if config.autoScrollToOrderKey {
+		config.autoScrollToOrderKey = false
+		config.scrollOffset = scrollOffsetFor(
+			s.Result.Ncols, config.view.ColsWidth, termWidth,
+			config.scrollOffset, config.view.OrderKey,
+		)
+	}
+
 	// Compute the visible window ONCE here and pass it to the header/data printers. This is
 	// the single source of truth for the render: it avoids re-running visibleColumns three
 	// times per frame (which risked the header and data disagreeing on the window) and it
@@ -849,6 +900,58 @@ func visibleColumns(ncols int, colsWidth map[int]int, termWidth, offset int) col
 	hiddenRight = last < ncols-1
 
 	return columnWindow{first: first, last: last, clamped: clamped, hiddenLeft: hiddenLeft, hiddenRight: hiddenRight}
+}
+
+// scrollOffsetFor returns the scroll offset that brings column orderKey into the visible window
+// with the SMALLEST movement from the current offset, or offset unchanged when that column is
+// already visible. Column 0 is frozen and always printed (printStatHeader), so it never scrolls.
+//
+// The answer is found by probing visibleColumns rather than by repeating its walk: the marker
+// reservation in both directions is the subtle part of that function (it already shipped one bug
+// invisible to unit tests), and a second copy of the arithmetic is how the two would drift apart.
+// ncols is at most a few dozen, so the probing is free.
+//
+// A partially visible column counts as visible — that is the window semantics of countFit above,
+// and any stricter notion would fight maxOffset forever.
+func scrollOffsetFor(ncols int, colsWidth map[int]int, termWidth, offset, orderKey int) int {
+	// Bounds guard (issue #99 class): config.view.Ncols, which the sort handlers wrap on, and the
+	// fresh result's Ncols can disagree for one frame after a view switch. Check against the
+	// result's column count, which is what the window is computed from.
+	if orderKey <= 0 || orderKey >= ncols {
+		return offset
+	}
+
+	win := visibleColumns(ncols, colsWidth, termWidth, offset)
+
+	// Empty window (last < first): the terminal has no room for any scrollable column beside the
+	// frozen one, so no offset can reveal the sort column. Leave the window where it is.
+	if win.last < win.first {
+		return offset
+	}
+
+	// Already visible, fully or partially: no jerk.
+	if orderKey >= win.first && orderKey <= win.last {
+		return win.clamped
+	}
+
+	// Hidden to the left: win.first == 1 + clamped, so offset orderKey-1 puts the column exactly
+	// at the left edge — the largest offset that reveals it, hence the smallest movement.
+	if orderKey < win.first {
+		return orderKey - 1
+	}
+
+	// Hidden to the right: walk offsets rightwards and take the first window that admits it. The
+	// walk is bounded by the last possible offset; visibleColumns re-clamps each probe.
+	for off := win.clamped + 1; off <= ncols-1; off++ {
+		w := visibleColumns(ncols, colsWidth, termWidth, off)
+		if orderKey >= w.first && orderKey <= w.last {
+			return w.clamped
+		}
+	}
+
+	// No offset admits the column (the window is too narrow at every position): leave the offset
+	// alone rather than landing on an arbitrary edge.
+	return offset
 }
 
 // printStatHeader prints the stats header for the visible column window: the frozen

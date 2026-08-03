@@ -26,10 +26,18 @@ const (
 // panel from the top by its extra-row count and pushes cmdline and dbstat down to clear the
 // taller of the two panels — so dbstat loses rows at the top, not the bottom.
 //
+// Both modes obey the same rule: the table sits directly under the command line, i.e.
+// dbstatY0 = cmdlineY1 - 1. A gocui view spanning y0..y1 owns content rows y0+1..y1-1, so this
+// makes dbstat's first content row the one right below cmdline's single content row — no
+// overlap and, just as importantly, no row that belongs to no view and renders blank. The
+// compact literals encode it (5-1 == 4); the verbose branch must compute it, not re-derive
+// the table top on its own.
+//
 // Height-guard: verbose expands only if maxY can fit the expanded band plus cmdline (2 rows),
 // the dbstat header (1 row) and at least 1 data row. Since dbstat's y1 is maxY-1, that needs
-// dbstatY0 + 1 (header) + 1 (data row) <= maxY - 1. If it cannot, the compact coordinates are
-// returned with expanded=false (graceful fallback — never inverted/negative/overlapping views).
+// dbstatY0 + 1 (header) + 1 (data row) <= maxY - 1, which with dbstatY0=9 means maxY >= 12.
+// If it cannot, the compact coordinates are returned with expanded=false (graceful fallback —
+// never inverted/negative/overlapping views).
 func topBandLayout(verbose bool, maxY int) (sysstatY1, pgstatY1, cmdlineY0, cmdlineY1, dbstatY0 int, expanded bool) {
 	if !verbose {
 		return compactSysstatY1, compactPgstatY1, compactCmdlineY0, compactCmdlineY1, compactDbstatY0, false
@@ -47,7 +55,7 @@ func topBandLayout(verbose bool, maxY int) (sysstatY1, pgstatY1, cmdlineY0, cmdl
 	bandTop := tallest - 1
 	cmdlineY0 = bandTop
 	cmdlineY1 = bandTop + 2
-	dbstatY0 = tallest + 1
+	dbstatY0 = tallest // == cmdlineY1 - 1, same tie as the compact literals
 
 	// minDbstatRows is the rows dbstat needs below dbstatY0 to be usable: 1 header + >=1 data row.
 	const minDbstatRows = 2

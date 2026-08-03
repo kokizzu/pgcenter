@@ -1,0 +1,12 @@
+pgcenter: 2026-08-03 08:42:03  state [ok]: /tmp:5432 postgre
+    %cpu: 47.5 us,  1.0 sy,      activity: 14/50 conns,  0/0
+ MiB mem:   2970 total,    52  autovacuum:  0/4 workers/max,
+MiB swap:    486 total,    48  statements:   0 stmt/s, 0.000
+
+pid       datname   usename   state     wait_etype  wait_eve
+11547     ppem      postgres  active    Timeout     PgSleep
+11548     postgres  postgres  active    Timeout     PgSleep
+11549     ppem      postgres  active    Timeout     PgSleep
+11550     ppem      postgres  active    Timeout     PgSleep
+11553     postgres  postgres  active    Timeout     PgSleep
+

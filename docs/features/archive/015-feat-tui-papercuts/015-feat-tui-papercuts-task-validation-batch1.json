@@ -1,0 +1,127 @@
+{
+  "validator": "dev-task-validator",
+  "feature_base": "docs/features/015-feat-tui-papercuts/015-feat-tui-papercuts",
+  "tasks_checked": ["01", "02", "03", "04", "05"],
+  "iteration": 1,
+  "status": "approved",
+  "verified_clean": [
+    "Structure: all 11 template sections present in all five tasks, in template order. TDD Anchor present in all five (all are code tasks) — no stub, no empty section.",
+    "Frontmatter: status=planned in all five; depends_on is an array everywhere; wave is a number >= 1; skills=[code-writing] (array); reviewers is an array; verify present.",
+    "Reviewer sets: every task carries exactly [dev-code-reviewer, dev-test-reviewer]. dev-security-auditor is NOT restored anywhere. Tasks 01-04 additionally carry the explanatory note; see finding 7 for task 05.",
+    "Waves and dependencies match the tech-spec wave-partition table exactly: 01/02/03 wave 1 depends_on []; 04 wave 2 depends_on [02,03]; 05 wave 2 depends_on []. No cycles. Every depended-on task sits in a strictly lower wave.",
+    "File disjointness inside each wave holds. Wave 1: 01={layout.go,layout_test.go}, 02={stat.go,stat_test.go}, 03={config_view.go,keybindings.go,help.go,config_view_test.go} — pairwise disjoint. Wave 2: 04={config.go,config_view.go,stat.go,config_view_test.go,stat_test.go}, 05={ui.go,top.go,dialog.go,ui_test.go} — disjoint.",
+    "Traceability: each task's 'files to modify' set equals the tech-spec Implementation Tasks entry for that task, file for file. No file added, none dropped.",
+    "TDD carry-forward from tech-spec Testing Strategy is complete: topBandLayout three changed cases + threshold 12 (task 01); verbose bold values / n/a not bolded / identifiers plain / n/a-width invariant repaired through the existing ansiEscape+visibleRuneLen (task 02); clearFilters+setFilter three message texts, clearing with nothing active, in-place deletion through the stored view (task 03); scrollOffsetFor all seven listed cases incl. empty result, flag cleared on both switch paths (task 04); composeCmdline ladder incl. two-token and single-variant cases, filterToken incl. deterministic ordering, nil Cols, out-of-range index, control-rune stripping (task 05). Nothing from the tech-spec was dropped.",
+    "Acceptance-criteria carry-forward: every task AC list is traceable to user-spec criteria (lines 245-302) and/or tech-spec Decisions. Notable ones present verbatim: 'Test_scrollOrthogonalToSort still passes with corrected comment + flag assertion' (04), 'n/a-width invariant repaired not removed' (02), 'all 44 printCmdline call sites compile unchanged' (05), 'two-token composer test' (05), 'help screen documents backslash' (03), 'verbose from 12 rows' (01).",
+    "No template placeholders ([Task Name], {PK path}, {reviewer-name}, {round}) and no TODO/FIXME/TBD anywhere in the batch.",
+    "'What to do' sections contain no pseudocode or algorithms. The only code-shaped text is one Go signature (task 04, scrollOffsetFor) and one struct-literal keybinding row (task 03, in Details) — legitimate as concrete deliverable descriptions.",
+    "All referenced paths exist: .claude/skills/project-knowledge/{overview,architecture,patterns}.md, docs/{tech-debt,decisions-log,features-catalog}.md, and every top/*.go and internal/* file. top/ui_test.go and top/dialog_test.go are correctly labelled as new files. Note: this project has no project-knowledge/project.md — overview.md is its equivalent and is listed in all five tasks.",
+    "Spot-checked load-bearing code anchors and they hold: printCmdline call-site count is exactly 45 (44 calls + definition, matching task 05's AC), printHeaderCell predicate at stat.go:902, isFilterRequired at stat.go:1145, naInt at stat.go:519, ansiEscape at stat_test.go:939, visibleColumns at stat.go:751, renderDbstat at stat.go:671, dialog.go:92 fmt.Fprint(p, prompt), dialog.go:79 SetView(...,3,...,5), layout.go dbstatY0 = tallest + 1, keybindings.go:60 '/', help.go:21 filter line, features-catalog.md:189 'no auto-scroll to the sort column'.",
+    "Skills<->reviewers mapping: the catalog default for code-writing includes dev-security-auditor, which is absent here. This is a deliberate, documented deviation approved in the tech-spec Implementation Tasks preamble — recorded as intended, not as a finding."
+  ],
+  "findings": [
+    {
+      "severity": "major",
+      "category": "consistency",
+      "task": "05",
+      "section": "What to do / Acceptance Criteria / Details",
+      "issue": "Task 03 states it extracts a filter-active predicate and an active-filter counter into top/config_view.go explicitly so that the '*' header marker, the counter and 'the future indicator' cannot drift apart — naming Task 5's filterToken as the second consumer. Task 05 never mentions that helper: its 'What to do' step 1 has filterToken build the token on its own, and its AC only demands the literal predicate 're != nil && re.String() != \"\"'. Task 03 also never names the helper, so Task 05 could not call it even if it wanted to. As written the batch produces a third copy of the predicate (printHeaderCell, config_view.go, ui.go) and defeats the stated reason Task 03 extracted it.",
+      "fix": "Give the helper a concrete name in Task 03 (e.g. filterActive / activeFilterCount) and add it to Task 03's AC. In Task 05, add a 'What to do' instruction and an AC requiring filterToken to call that helper rather than re-implement the predicate (same package, read-only use of config_view.go is allowed by the file-ownership rule). Also consider setting Task 05's depends_on to [\"03\"] to make the symbol dependency explicit — wave ordering already guarantees it, but the declaration would be honest."
+    },
+    {
+      "severity": "minor",
+      "category": "frontmatter",
+      "task": "02",
+      "section": "frontmatter",
+      "issue": "All six frontmatter lines still carry the template's instructional comments ('# planned -> in_progress -> done', '# ID задач-зависимостей (строки: [\"01\", \"02\"])', '# МАССИВ скиллов для загрузки', '# инструмент верификации (опционально: curl, bash, user)', '# явно указать. Пусто = fallback на defaults', '# имя агента-исполнителя...'). Tasks 01/03/05 stripped them; 04 stripped them too.",
+      "fix": "Delete the trailing comments from Task 02's frontmatter so the five task files read identically."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": "02",
+      "section": "Details",
+      "issue": "The template's HTML comment '<!-- All details for task execution — technical, organizational, any other. -->' is still present at the top of the Details section (line 164). No other task in the batch kept it.",
+      "fix": "Remove the leftover template comment."
+    },
+    {
+      "severity": "minor",
+      "category": "frontmatter",
+      "task": "02, 04",
+      "section": "frontmatter",
+      "issue": "verify is written unquoted with backticks and an em-dash: verify: bash — `make test`. It does parse as a YAML plain scalar, but tasks 01/03/05 use the quoted form verify: \"bash — make test\". Two spellings of the same value across one batch invite a parser-dependent surprise.",
+      "fix": "Normalize all five to the quoted form \"bash — make test\"."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": "02, 04",
+      "section": "Context Files",
+      "issue": "Context-file links use repo-root-relative paths — [top/stat.go](top/stat.go), [architecture.md](.claude/skills/project-knowledge/architecture.md), [015-feat-tui-papercuts.md](docs/features/015-feat-tui-papercuts/015-feat-tui-papercuts.md) — which do not resolve from the task file's own directory (they would resolve to docs/features/015-feat-tui-papercuts/docs/features/...). Tasks 01/03/05 use ../../../top/... and bare sibling names, which resolve correctly. The paths are still usable by an agent whose cwd is the repo root, so nothing is lost operationally, but half the batch has non-clickable links.",
+      "fix": "Pick one convention for the feature and apply it to all five files. The 01/03/05 form (relative to the task file) is the one that actually resolves in a markdown viewer."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": "01, 03, 05",
+      "section": "Context Files",
+      "issue": "The tasks reason from ADRs [009] and [010] in their Description / What to do (pure-function extraction, scroll offset on config, verbose geometry), but do not list docs/decisions-log.md among the context files. Task 04 does list it. The executing agent is told the ADR conclusions second-hand without a pointer to the source.",
+      "fix": "Add [docs/decisions-log.md] to the Project knowledge block of tasks 01, 03 and 05, naming the relevant ADR ids."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": "05",
+      "section": "Context Files",
+      "issue": "top/ui_test.go — the new file this task creates and the location of every one of its TDD anchors — is missing from the 'Code files' block. It appears only in Details and in the AC. Task 07 has the same shape and does declare top/dialog_test.go (new) in the tech-spec's file list, so the omission is local to task 05's Context Files.",
+      "fix": "Add [top/ui_test.go](../../../top/ui_test.go) — new file, all TDD anchors live here — to the Code files block."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": "05",
+      "section": "Reviewers",
+      "issue": "Task 05 is the only task in the batch whose Reviewers section does not carry the note explaining that dev-security-auditor is deliberately absent per the tech-spec's Implementation Tasks preamble. The reviewer set itself is correct; what is missing is the guard that stops a later fix round (or a re-validation against the default catalog mapping) from 'restoring' the auditor. Task 05 is also the task with the most security-adjacent surface in the feature (control-rune stripping, goroutine generation counter), so it is the likeliest one to attract that reflex.",
+      "fix": "Copy the two-line note from task 04 into task 05's Reviewers section."
+    },
+    {
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": "04",
+      "section": "Acceptance Criteria / TDD Anchor",
+      "issue": "User-spec acceptance criterion (line 248) reads 'Сортировка стрелками по любой колонке, включая последнюю, приводит колонку в видимую область'. The last-column case has no direct counterpart in task 04: the AC list covers already-visible / out-of-range / column-0 / one-shot / byte-identical clamp, and the anchors cover column_to_the_right and column_to_the_left generically. The last column is precisely where the probe walk meets the maxOffset clamp — the repo already has a dedicated regression test for that interaction (Test_visibleColumns_maxOffsetReachesLastColumn, top/stat_test.go:766), which is evidence the boundary has bitten before.",
+      "fix": "Add an AC ('sorting by the last column brings it into the window') and a TDD anchor `top/stat_test.go::Test_scrollOffsetFor/last_column` — the returned offset admits ncols-1 and equals maxOffset, asserted against visibleColumns rather than recomputed."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": "02, 04, 05",
+      "section": "Details / Context Files",
+      "issue": "Several cited line anchors have drifted by a few lines against the current tree: task 04 cites Test_scrollOrthogonalToSort at :145-193 (actual 147), Test_viewSwitchResetsScrollOffset at :194 (actual 196), Test_switchViewToProcPidStatResetsScrollOffset at :213 (actual 219); task 02 cites visibleRuneLen at :941-945 (actual 943-945); task 05 cites printStat at :162-166 and :159-164 (function starts at 157). Every anchor resolves by name, and task 04 explicitly tells the agent to re-locate by name, so the risk is low — but a wrong number invites an edit at the wrong site.",
+      "fix": "Refresh the drifted line numbers, or drop the numbers where the symbol name already identifies the site uniquely."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": "01, 02, 03, 04, 05",
+      "section": "whole file",
+      "issue": "The batch is split by language: tasks 01, 03, 05 are written in Russian (task 01's title too), tasks 02 and 04 in English. The global convention records technical documents as English. Within one feature this also makes the five files read as if they came from different authors, which matters when a reviewer diffs them against each other for the file-ownership and reviewer-set invariants.",
+      "fix": "Settle on one language for the feature's task files. No content change is needed — only consistency."
+    },
+    {
+      "severity": "minor",
+      "category": "atomicity",
+      "task": "05",
+      "section": "whole file",
+      "issue": "Task 05 is by a wide margin the heaviest unit in the batch: 4 files (one new), 8 'What to do' steps, and seven tech-spec decisions (1, 2, 6, 10, 12, 13, 14) including the feature's only synchronisation primitive and its only ambient global. Logical cohesion is genuine — remove the no-timer writer and the dialog erases the indicator; remove the generation counter and the timer leaks a Gui — so this is not a split candidate, and it cannot be split anyway without putting two tasks in top/ui.go and breaking the file-based wave partition.",
+      "fix": "No split. Recorded so the orchestrator budgets extra review rounds for task 05 and so a later validation pass does not re-litigate the decomposition."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 12,
+    "critical": 0,
+    "major": 1,
+    "minor": 11
+  }
+}

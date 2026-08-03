@@ -20,6 +20,11 @@ func RunMain(dbConfig postgres.Config) error {
 	// Create application instance.
 	app := newApp(db, newConfig())
 
+	// Publish the config as the ambient source of the cmdline state prefix. It belongs here and
+	// not in newApp: newApp also runs in unit tests, where it would leave the package-level
+	// pointer aimed at one test's config for every test that follows.
+	setCmdlineConfig(app.config)
+
 	// Setup application.
 	err = app.setup()
 	if err != nil {
@@ -67,6 +72,10 @@ func (app *app) setup() error {
 
 	// Set default view.
 	app.config.view = app.config.views["activity"]
+
+	// Seed the refresh interval displayed in the header. setup() is called from RunMain before
+	// mainLoop starts any goroutine, so this write is race-free.
+	app.config.refresh = defaultRefresh
 
 	app.config.queryOptions = opts
 	app.postgresProps = props

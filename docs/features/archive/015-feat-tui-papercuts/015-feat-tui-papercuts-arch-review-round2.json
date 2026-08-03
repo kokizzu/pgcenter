@@ -1,0 +1,33 @@
+{
+  "status": "needs_revision",
+  "checks": {
+    "architectural_fit": "fail",
+    "scalability": "n/a",
+    "database": "n/a",
+    "coupling": "pass",
+    "api_contracts": "n/a",
+    "backward_compat": "pass"
+  },
+  "findings": [
+    {
+      "check": "architectural_fit",
+      "severity": "major",
+      "issue": "Decision 14 says the clear timer 'waits on both its channel and the app context' but the tech-spec never specifies how that context reaches the timer-arming code, and the natural naive implementation reintroduces a real race. Verified in top/ui.go: mainLoop's ctx is a purely local variable, re-declared every loop iteration via `ctx, cancel := context.WithCancel(ctx)` (shadowing the parameter each iteration) — it is never stored on `app` or exposed anywhere `printCmdline`/`writeCmdline` (called with just `g *gocui.Gui`, per Decision 1's explicit 'signature unchanged' constraint) could read it. Data Models lists only `cmdlineToken` and `var cmdlineCfg *config` as new package-level state — no context field or var is named anywhere, and no task or unit test references it. If an implementer follows Decision 14's prose literally and has the spawned timer goroutine do `select { case <-t.C: ...; case <-cmdlineCtx.Done(): ...}` against a package-level ambient (the obvious extension of Decision 1's pattern), that is unsafe: per the Go spec, a select statement's channel operands are evaluated when the goroutine's select actually runs, not when `go` is called, so a stale timer goroutine can read a `cmdlineCtx` that mainLoop concurrently overwrites on the next restart. This is not a remote scenario: mainLoop's own error-rate limiter (top/ui.go:57, errrate.go) explicitly tolerates up to 5 restarts within 1 second, well inside the timer's 2-second life, so the previous iteration's timer goroutines are routinely still alive when the next iteration's context would be created. This is exactly the class of hazard Decision 1 devotes four paragraphs to avoiding for `cmdlineCfg` (\"written exactly once... before any goroutine exists\", \"dereferenced only inside g.Update closures\") -- Decision 14 introduces a second piece of per-iteration-mutable ambient state with none of that discipline written down.",
+      "location": "Decision 14; Data Models (no new field listed); Implementation Tasks (no task named)",
+      "fix": "Specify the plumbing explicitly, reusing a pattern already present in this exact file: add a plain `app.ctx` field, written once per mainLoop iteration in the same place `app.ui = g` already is (top/ui.go:24), and read only inside `g.Update` closures or key handlers exactly like `cmdlineCfg` — mirroring the fact that `layout(app)` and `keybindings(app)` are already re-created fresh each iteration (top/ui.go:27,30) and are therefore safe to read app-scoped, per-iteration state from. State explicitly that the timer-arming code must capture `app.ctx` into a local variable (e.g. `ctx := app.ctx`) *before* `go func(){ select{...; case <-ctx.Done(): ...} }()`, not reference the field/ambient from inside the spawned goroutine's select — that capture-at-arm-time is what makes it race-free. Add the field to Data Models and assign the change to Task 5 (the only Wave-2 task touching top/ui.go, and where Decision 10's g.Update move for the same timer already lands)."
+    },
+    {
+      "check": "architectural_fit",
+      "severity": "minor",
+      "issue": "Decision 13's choice of layer holds up under inspection but leaves a related, arguably worse gap untracked. Verified `printDataCell` (top/stat.go:1014, `fmt.Fprintf(w, \"%-*s\", ..., s.Result.Values[rownum][i].String)`) writes row values with zero SGR wrapping — less protected than `printHeaderCell`, which always wraps in `\\033[..m...\\033[0m` and therefore self-heals an embedded escape at the cell boundary. So the tech-spec's own claim ('row values have the same exposure today') is correct, and scoping the fix to `filterToken` is still the right call: dbstat/pgstat panels redraw every refresh tick with abundant well-formed SGR elsewhere in the same view, so a corrupted escape-interpreter state there is very likely healed within one tick, whereas the cmdline — by this feature's own design goal of a *persistent* indicator that is not overwritten for long stretches — has no comparable self-healing cadence, so a corruption there genuinely can persist for the rest of the session as the spec states. The asymmetry is therefore justified, not arbitrary. What is missing is that the security review which produced Decision 13 explicitly suggested tracking the wider, pre-existing `printDataCell`/`printHeaderCell` exposure as tech debt ('worth one line in tech-debt'), and neither the Risks table nor any other section of the tech-spec records that follow-up.",
+      "location": "Decision 13; Risks table",
+      "fix": "Add one line to the Risks table (or to docs/tech-debt.md directly at finalization) noting that row values rendered via printDataCell carry the same unsanitised-control-rune exposure as the new indicator, scoped out of this feature deliberately, so the decision isn't silently forgotten the next time someone touches stat.go."
+    }
+  ],
+  "risk_assessment": {
+    "performance": "low",
+    "complexity": "medium",
+    "tech_debt": "low"
+  },
+  "summary": "The two wave moves are sound and create no ordering problem: clear-filters (Task 3, now Wave 1) has zero code dependency on the cmdline composer (setFilter/clearFilters touch only view.Filters, verified in config_view.go) — its full visual effect needs Task 5 but that is correctly deferred to the stand run rather than gating the task's own wave; refresh-in-header (Task 6, now Wave 3) is pushed back purely for file-disjointness (it is the widest file-set task), not because of a real logical dependency, and the wave-partition table confirms no collisions. Decision 13's layer choice for sanitisation is architecturally justified once checked against the actual unwrapped printDataCell code, not just plausible on its face. The one real problem is Decision 14: it names a guard ('the app context') that has no home anywhere in the spec's Architecture, Data Models, or task list, and the obvious literal implementation of its own wording reintroduces a genuine data race under mainLoop's own permitted restart cadence — this needs a named field and an explicit capture-at-arm-time rule before decomposition, which is why the status is needs_revision rather than approved."
+}

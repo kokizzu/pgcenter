@@ -1,0 +1,54 @@
+{
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "task_quality",
+      "issue": "Round-1 major finding (decision rationale duplicated from the Decisions section into task descriptions) is only one-third addressed. Task 6 (was Task 2) was genuinely fixed — the transient-field paragraph is now the single clause \"The existing transient field cannot carry it.\" But the other two are byte-for-byte unchanged apart from one deleted backtick: Task 2 still says \"leaving degraded sentinels and identifier fields plain so a missing signal stays visually distinct from a real number\", which restates the Rationale of Decision 9 (\"Bold must read as 'there is a real number here', which is why degraded fields stay plain\"); Task 7 still says \"reserving space for the field so an overlong prompt is truncated rather than covered\", which restates the Decision of Decision 3 (\"Truncate the prompt, never overlay it with the input field\"). The renumbering makes this worse rather than better: the rationale now lives in two places under two different numbers, and Decision 9's number already drifted once in this round.",
+      "fix": "Trim to WHAT + a pointer: Task 2 -> \"...leaving `n/a` sentinels and identifier fields plain (Decision 9).\"; Task 7 -> \"...deriving both axes from the real state (Decisions 3 and 11).\" The dropped clauses already exist verbatim in the Decisions section, so nothing is lost."
+    },
+    {
+      "severity": "major",
+      "category": "tasks",
+      "issue": "Task 8 (Wave 4, stand verification) now carries a code-fixing mandate — \"Fix any defect found, or ... report it and stop for a decision\" — while keeping `Skill: pre-deploy-qa` and `Reviewers: none`. The catalog scopes `pre-deploy-qa` to \"Acceptance testing before deploy (tests + acceptance criteria)\" and assigns it no reviewers precisely because \"QA is its own verification\" — i.e. the empty reviewer set is sound only for a task that does not write code. As written, a fix landing in `top/stat.go` or `top/dialog.go` during Wave 4 would ship without `dev-code-reviewer` or `dev-test-reviewer` ever seeing it, and Task 9 (also `pre-deploy-qa`) is not a code review. This is new in round 2 — round 1's Task 8 only ran the stand. The round-1 fix asked for the stand run to be sequenced ahead of the Final Wave, which was done correctly; the added fix-it-yourself mandate is what creates the gap.",
+      "fix": "Pick one. (a) Scope Task 8 to observation: \"...record every defect found and stop\", `Files to modify: none`, and let a follow-up code-writing task (or a repeat of the owning wave task) carry the fix under normal review. (b) Keep the fix mandate but declare it honestly: `Skill: code-writing`, `Reviewers: dev-code-reviewer, dev-test-reviewer`, and state in the description that the task begins with a stand run. Option (a) matches the catalog better and keeps Wave 4 a pure gate."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "issue": "The decision renumbering broke a cross-reference. Dependencies / \"Using existing\" still reads: \"`internal/pretty` — unchanged; its `RateUnitPrefixed` output is wrapped as-is (Decision 8).\" Decision 8 is now \"The auto-scroll request is cleared on both screen-switch paths\"; the RateUnitPrefixed rule moved to Decision 9. Every other numeric cross-reference survived the renumbering intact — Decision 8 at Architecture (auto-scroll), Decision 1 at Backward Compatibility, Decision 6 in the Risks table, Decision 10 inside Decision 14 — so this is the single stale pointer, not a systemic problem.",
+      "fix": "Change `(Decision 8)` to `(Decision 9)` in the `internal/pretty` bullet under Dependencies."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "issue": "Testing Strategy / E2E tests still places the stand run in the Final Wave: \"The equivalent coverage is the stand run below, which is a task in the Final Wave rather than an afterthought.\" The stand run moved to Wave 4 in this round; the Final Wave now contains only Task 9. A decomposer reading Testing Strategy top-down gets the pre-round-2 layout.",
+      "fix": "Replace \"a task in the Final Wave\" with \"a task in its own wave (Wave 4), ahead of the Final Wave\" so the sentence matches the wave table."
+    },
+    {
+      "severity": "minor",
+      "category": "tasks",
+      "issue": "Task 8's `Files to modify: whichever file carries a defect found on the stand` is a description of a search, not a file path. The template requires concrete paths, and `dev-task-creator` will have nothing to resolve. It is also the one line that makes Wave 4's file-disjointness unverifiable in principle — harmless here only because Task 8 is alone in its wave.",
+      "fix": "If Task 8 becomes observation-only (see the Task 8 finding above), write `Files to modify: none — findings are reported, not fixed`. If it keeps the fix mandate, bound it to the files the seven behaviours can live in: `top/stat.go`, `top/layout.go`, `top/dialog.go`, `top/ui.go`, `top/config_view.go` plus their `_test.go` counterparts."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "issue": "Round-1 finding on missing \"Alternatives considered\" is half addressed. Six decisions lacked it in round 1; alternatives were added to three of them (now Decisions 5, 6, 7) and both new decisions (13, 14) shipped with alternatives. Still missing on Decision 10 (clear timer moves onto `g.Update`), Decision 11 (dialog y from `topBandLayout`) and Decision 12 (lengths measured in runes) — 11 of 14 decisions now carry the field, which makes the three gaps read as oversight rather than as \"no alternative existed\". Each did have a rejected option: Decision 10 -> keeping `v.Clear()` from the bare goroutine (loses the indicator, keeps the race); Decision 11 -> keeping the hard-wired `3, 5`; Decision 12 -> `len()` in bytes.",
+      "fix": "Add a one-line **Alternatives considered:** to Decisions 10, 11 and 12 naming the status-quo option and why it was rejected."
+    },
+    {
+      "severity": "minor",
+      "category": "task_quality",
+      "issue": "Round-1 minor on Task 1 (was Task 3) is unaddressed — the description still carries the root-cause diagnosis: \"...renders empty, because the verbose branch computes the table's top independently of the cmdline while the compact branch ties them together.\" This is the only `because` clause left in any task description, and it points the implementer at the specific branch, which is task-file material rather than tech-spec scope.",
+      "fix": "Shorten to the observable defect plus the intent: \"In verbose mode a row between the cmdline and the table belongs to no view and renders empty. Align the verbose arithmetic in `topBandLayout` with the compact rule.\" The branch-level explanation belongs in the task file."
+    },
+    {
+      "severity": "minor",
+      "category": "tasks",
+      "issue": "Task 1's scope is narrower than what its own verification demands. The description covers only the blank line, but the per-task verification row for Task 1 requires \"guard threshold 12\", Testing Strategy requires \"`topBandLayout`: the three changed cases plus the new height-guard threshold of 12\", and Backward Compatibility lists the 13->12 drop as one of only two user-visible default changes in the feature. Removing a row and lowering the guard are related but not the same edit, and a decomposed task file built from the description alone would omit the second.",
+      "fix": "Add a clause to Task 1's description: \"...and lower the verbose height guard from 13 to 12 rows, since one fewer row is now consumed.\" Keeps the task at two sentences."
+    }
+  ],
+  "summary": "Approved — all three round-1 criticals are genuinely resolved, and no new critical was introduced. Wave partitioning is now correct and verifiable: I recomputed the file sets per wave and no file appears twice in any wave (W1: layout/stat/config_view+keybindings+help; W2: config+config_view+stat vs ui+top+dialog; W3: config+top+ui+config_view+stat vs dialog), the wave-partition table matches the task bodies exactly, the Risks row was rewritten to state the parallel-execution-in-one-working-tree reasoning instead of asserting the old overlaps were harmless, and cross-wave file reuse (stat.go in 1/2/3, dialog.go in 2/3, config_view.go in 1/2/3) is sequential and therefore fine. Dependency direction matches wave order everywhere: task 7 needs task 5 (W2) and task 1 (W1); task 6 needs task 5; task 9 needs task 8, now one wave earlier; no cycles. The stand run owns Wave 4 alone with the single-tmux-session reasoning stated, and Task 9 has both a Verify line and a per-task verification row, closing the last round-1 verification gap. Renumbering is internally consistent (Decisions 1..14 in document order, tasks 1..9, verification rows 1..9 all matching their tasks). Template compliance re-checked from scratch and holds: frontmatter valid (2026-08-02 / draft / feature/tui-papercuts / M), every required section present and substantive, Risks a real table, no time-based estimates anywhere, 9 tasks well under the split threshold, all skills in the catalog and both reviewers present on disk, and the new pure-function names plus the two new `_test.go` files match patterns.md conventions and the [009] testable-TUI pattern. The round-1 patterns.md documentation gap is now covered by an explicit Acceptance Criterion. Eight informational findings remain, two of them major: decision rationale still duplicated verbatim in Tasks 2 and 7 (only Task 6 of the three was fixed), and Task 8's new fix-what-you-find mandate combined with `pre-deploy-qa` + `Reviewers: none`, which would let Wave 4 code changes ship unreviewed — the one place where this round's restructure opened something. The six minors are two stale cross-references left by the renumbering (`Decision 8` in Dependencies should be 9; Testing Strategy still calls the stand run a Final Wave task), Task 8's non-concrete file list, three decisions (10, 11, 12) still without Alternatives considered, the unaddressed `because` clause in Task 1, and Task 1's description omitting the 13->12 guard change its own verification row requires."
+}

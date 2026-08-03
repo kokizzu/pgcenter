@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"github.com/jroimartin/gocui"
 	"github.com/lesovsky/pgcenter/internal/postgres"
+	"github.com/lesovsky/pgcenter/internal/view"
 	"github.com/stretchr/testify/assert"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -142,8 +144,11 @@ func Test_scrollRight(t *testing.T) {
 	}
 }
 
-// Test_scrollOrthogonalToSort verifies scroll and sort are independent:
-// scroll handlers do not mutate OrderKey, sort handlers do not mutate scrollOffset.
+// Test_scrollOrthogonalToSort verifies the handler-level contract between scroll and sort:
+// scroll handlers do not mutate OrderKey, and sort handlers do not mutate scrollOffset —
+// they only raise the one-shot autoScrollToOrderKey request. Sorting is therefore only
+// DEFERREDLY orthogonal to scrolling: the handler leaves the window alone, but the next
+// renderDbstat consumes the request and may move the window to reveal the sort column.
 func Test_scrollOrthogonalToSort(t *testing.T) {
 	wg := sync.WaitGroup{}
 
@@ -187,9 +192,79 @@ func Test_scrollOrthogonalToSort(t *testing.T) {
 			fn := fnFactory(config)
 			assert.NoError(t, fn(nil, nil))
 			assert.Equal(t, 3, config.scrollOffset)
+			assert.True(t, config.autoScrollToOrderKey, "the sort handler defers the scroll, it does not perform it")
 			wg.Wait()
 		})
 	}
+}
+
+// Test_orderKeySetsAutoScrollFlag verifies both sort handlers raise the one-shot auto-scroll
+// request and leave the offset itself to the render.
+func Test_orderKeySetsAutoScrollFlag(t *testing.T) {
+	wg := sync.WaitGroup{}
+
+	for i, fnFactory := range []func(*config) func(*gocui.Gui, *gocui.View) error{orderKeyLeft, orderKeyRight} {
+		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
+			config := newConfig()
+			config.view = config.views["activity"]
+			config.view.OrderKey = 5
+			config.scrollOffset = 2
+			assert.False(t, config.autoScrollToOrderKey, "the flag must start cleared")
+
+			wg.Add(1)
+			go func() {
+				<-config.viewCh
+				close(config.viewCh)
+				wg.Done()
+			}()
+
+			fn := fnFactory(config)
+			assert.NoError(t, fn(nil, nil))
+			assert.True(t, config.autoScrollToOrderKey)
+			assert.Equal(t, 2, config.scrollOffset, "the handler must not touch the offset")
+			wg.Wait()
+		})
+	}
+}
+
+// Test_viewSwitchResetsAutoScrollFlag verifies the common switch path clears the pending
+// auto-scroll request: otherwise the first render of the NEW screen would consume it and
+// scroll to a sort column the user never chose there.
+func Test_viewSwitchResetsAutoScrollFlag(t *testing.T) {
+	config := newConfig()
+	config.view = config.views["activity"]
+	config.autoScrollToOrderKey = true
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		<-config.viewCh
+		close(config.viewCh)
+		wg.Done()
+	}()
+
+	viewSwitchHandler(config, "databases_general")
+	wg.Wait()
+
+	assert.False(t, config.autoScrollToOrderKey)
+}
+
+// Test_switchViewToProcPidStatResetsAutoScrollFlag verifies the per-process path (which
+// bypasses viewSwitchHandler) also clears the pending request. The non-local guard returns
+// early without touching the DB, so the reset must sit before the guard to be observable
+// without a live PostgreSQL backend.
+func Test_switchViewToProcPidStatResetsAutoScrollFlag(t *testing.T) {
+	app := &app{
+		config: newConfig(),
+		db:     &postgres.DB{Local: false}, // remote: early return, no DB access
+	}
+	app.config.view = app.config.views["activity"]
+	app.config.autoScrollToOrderKey = true
+
+	fn := switchViewToProcPidStat(app)
+	assert.NoError(t, fn(nil, nil))
+
+	assert.False(t, app.config.autoScrollToOrderKey)
 }
 
 // Test_viewSwitchResetsScrollOffset verifies the common switch path resets scroll.
@@ -330,24 +405,184 @@ func Test_switchSortOrder(t *testing.T) {
 	}
 }
 
+// Test_setFilter — each case seeds its own precondition on a fresh view, so the cases
+// are order-independent and individually runnable via '-run Test_setFilter/<name>'.
 func Test_setFilter(t *testing.T) {
 	testcases := []struct {
-		answer string
-		want   string
+		name        string
+		prefill     string // pattern installed on the ordered column before the case runs
+		answer      string
+		want        string
+		wantFilters int // number of filters left on the view afterwards
 	}{
-		{answer: "example", want: "Filters: ok"},
-		{answer: "", want: "Filters: regular expression cleared"},
-		{answer: "\n", want: "Filters: regular expression cleared"},
-		{answer: "[0-", want: "Filters: error parsing regexp: missing closing ]: `[0-`"},
+		{name: "set", answer: "example", want: "Filters: ok", wantFilters: 1},
+		{name: "clear-existing", prefill: "example", answer: "", want: "Filters: regular expression cleared", wantFilters: 0},
+		{name: "clear-absent", answer: "\n", want: "Filters: no filter on this column", wantFilters: 0},
+		{name: "invalid-regexp", answer: "[0-", want: "Filters: error parsing regexp: missing closing ]: `[0-`", wantFilters: 0},
 	}
-
-	config := newConfig()
-	config.view = config.views["activity"]
-	config.view.OrderKey = 0
 
 	for _, tc := range testcases {
-		assert.Equal(t, tc.want, setFilter(tc.answer, config.view))
+		t.Run(tc.name, func(t *testing.T) {
+			config := newConfig()
+			config.view = config.views["activity"]
+			config.view.OrderKey = 0
+			if tc.prefill != "" {
+				config.view.Filters[0] = regexp.MustCompile(tc.prefill)
+			}
+
+			assert.Equal(t, tc.want, setFilter(tc.answer, config.view))
+			assert.Len(t, config.view.Filters, tc.wantFilters)
+		})
 	}
+}
+
+func Test_isFilterActive(t *testing.T) {
+	testcases := []struct {
+		name string
+		re   *regexp.Regexp
+		want bool
+	}{
+		{name: "nil", re: nil, want: false},
+		{name: "empty-pattern", re: regexp.MustCompile(""), want: false},
+		{name: "non-empty-pattern", re: regexp.MustCompile("example"), want: true},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isFilterActive(tc.re))
+		})
+	}
+}
+
+func Test_activeFilterCount(t *testing.T) {
+	testcases := []struct {
+		name    string
+		filters map[int]*regexp.Regexp
+		want    int
+	}{
+		{name: "nil-map", filters: nil, want: 0},
+		{name: "empty-map", filters: map[int]*regexp.Regexp{}, want: 0},
+		{name: "nil-value", filters: map[int]*regexp.Regexp{0: nil}, want: 0},
+		{name: "empty-pattern", filters: map[int]*regexp.Regexp{0: regexp.MustCompile("")}, want: 0},
+		{
+			name:    "two-active",
+			filters: map[int]*regexp.Regexp{0: regexp.MustCompile("example"), 3: regexp.MustCompile("test")},
+			want:    2,
+		},
+		{
+			name:    "mixed",
+			filters: map[int]*regexp.Regexp{0: regexp.MustCompile("example"), 1: nil, 3: regexp.MustCompile("")},
+			want:    1,
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, activeFilterCount(tc.filters))
+		})
+	}
+}
+
+func Test_clearFilters_noActiveFilters(t *testing.T) {
+	config := newConfig()
+	config.view = config.views["activity"]
+
+	msg, n := clearAllFilters(config.view)
+	assert.Equal(t, "Filters: no active filters", msg)
+	assert.Equal(t, 0, n)
+	assert.Empty(t, config.view.Filters)
+
+	// viewCh is unbuffered: an erroneous send would block INSIDE the handler and the
+	// non-blocking select below would never be reached — the test would hang until the
+	// 'go test' timeout instead of failing. Run the handler in a goroutine with a deadline.
+	var err error
+	done := make(chan struct{})
+	go func() { defer close(done); err = clearFilters(config)(nil, nil) }()
+
+	select {
+	case <-done:
+		// Only this branch is synchronized with the goroutine, so err is read here only.
+		assert.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("handler blocked sending on viewCh with no filters to clear")
+	}
+
+	select {
+	case <-config.viewCh:
+		t.Fatal("unexpected send on viewCh")
+	default:
+	}
+
+	assert.Empty(t, config.view.Filters) // the handler left the map alone too
+}
+
+func Test_clearFilters_clearsAll(t *testing.T) {
+	// Filters live on columns 0 and 3, neither of them is the ordered column — a
+	// per-column clear (the old behaviour) would leave both in place.
+	newFilteredConfig := func() *config {
+		config := newConfig()
+		config.view = config.views["activity"]
+		config.view.OrderKey = 5
+		config.view.Filters[0] = regexp.MustCompile("example")
+		config.view.Filters[3] = regexp.MustCompile("test")
+		return config
+	}
+
+	t.Run("message-and-count", func(t *testing.T) {
+		config := newFilteredConfig()
+
+		msg, n := clearAllFilters(config.view)
+		assert.Equal(t, "Filters: cleared 2 filter(s)", msg)
+		assert.Equal(t, 2, n)
+		assert.Empty(t, config.view.Filters)
+	})
+
+	t.Run("handler-sends-view", func(t *testing.T) {
+		config := newFilteredConfig()
+
+		// Deadline instead of a plain wg.Wait(): if a regression stops the handler from
+		// sending, waiting unconditionally would hang the whole package until the
+		// 'go test' timeout instead of failing this one case.
+		received := make(chan view.View, 1)
+		go func() { received <- <-config.viewCh }()
+
+		fn := clearFilters(config)
+		assert.NoError(t, fn(nil, nil))
+
+		select {
+		case v := <-received:
+			assert.Empty(t, v.Filters)
+		case <-time.After(time.Second):
+			t.Fatal("handler did not send the cleared view on viewCh")
+		}
+
+		assert.Empty(t, config.view.Filters)
+	})
+}
+
+// Test_clearFilters_inPlaceVisibleThroughStoredView catches an implementation which
+// assigns a fresh filters map instead of deleting in place: the map header is shared
+// with the copy stored in config.views, so a reassignment would leave the stored copy
+// with the old filters and they would come back on the next view switch.
+func Test_clearFilters_inPlaceVisibleThroughStoredView(t *testing.T) {
+	config := newConfig()
+	config.view = config.views["activity"]
+	config.view.Filters[0] = regexp.MustCompile("example")
+	config.views[config.view.Name] = config.view
+
+	received := make(chan view.View, 1)
+	go func() { received <- <-config.viewCh }()
+
+	fn := clearFilters(config)
+	assert.NoError(t, fn(nil, nil))
+
+	select {
+	case <-received:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not send the cleared view on viewCh")
+	}
+
+	assert.Empty(t, config.views["activity"].Filters)
 }
 
 func Test_switchViewTo(t *testing.T) {
@@ -673,6 +908,8 @@ func Test_changeRefresh(t *testing.T) {
 		}()
 
 		assert.Equal(t, "Refresh: ok", changeRefresh("5", config))
+		// The durable copy used by the header is kept in sync with the value sent to the collector.
+		assert.Equal(t, 5*time.Second, config.refresh)
 		wg.Wait()
 		close(config.viewCh)
 	})
@@ -692,8 +929,11 @@ func Test_changeRefresh(t *testing.T) {
 		}
 		for k, v := range testcases {
 			config.view.Refresh = 1 * time.Second
+			config.refresh = 2 * time.Second
 			assert.Equal(t, v, changeRefresh(k, config))
 			assert.Equal(t, 1*time.Second, config.view.Refresh) // should not be 0
+			// Invalid input must not change what the header displays.
+			assert.Equal(t, 2*time.Second, config.refresh)
 		}
 	})
 }

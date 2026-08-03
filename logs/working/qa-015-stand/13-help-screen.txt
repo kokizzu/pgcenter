@@ -1,0 +1,52 @@
+pgcenter v0.11.0 (71d22da, feature/tui-papercuts): Help for interactive commands
+                                                                                                                                                                                             r
+general actions:
+    a,b,f,o     mode: 'a' activity, 'b' bgwriter/checkpointer, 'f' functions, 'o' replication slots,
+    r,w               'r' replication, 'w' WAL,
+    s,t,i             's' tables sizes, 't' tables, 'i' indexes.
+    d,D               'd' pg_stat_database switch, 'D' pg_stat_database menu.                                                                                                                g
+    x,X               'x' pg_stat_statements switch, 'X' pg_stat_statements menu.                                                                                                            e
+    p,P               'p' pg_stat_progress_* switch, 'P' pg_stat_progress_* menu.                                                                                                            e
+    j,J               'j' pg_stat_io switch (operations/timings), 'J' pg_stat_io menu.                                                                                                       g
+    S                 'S' per-process system stats (local mode only; Shift+S).                                                                                                               e
+    Left,Right,<,/    'Left,Right' change column sort, '<' desc/asc sort toggle, '/' set filter.                                                                                             i
+    \                 '\' clear all filters of the current screen.
+    Up,Down           'Up' increase column width, 'Down' decrease column width.
+    [,]               '[' scroll columns left, ']' scroll columns right.
+    C,E,R       config: 'C' show config, 'E' edit configs, 'R' reload config.
+    ~                 start psql session.
+    l                 open log file with pager.
+
+extra stats actions:
+    B,N,F,L       'B' diskstat, 'N' nicstat, 'F' filesystems, L' logtail.
+    v             'v' verbose mode for the summary panels on/off.
+
+activity actions:
+    -,_         '-' cancel backend by pid, '_' terminate backend by pid.
+    n,m         'n' set new mask, 'm' show current mask.
+    k,K         'k' cancel group of queries using mask, 'K' terminate group of backends using mask.
+    I           show IDLE connections toggle.
+    A           change activity age threshold.
+    G           get query report.
+
+other actions:
+    , Q         ',' show system tables on/off, 'Q' reset postgresql statistics counters
+                      ('Q' does not reset shared stats: pg_stat_io, bgwriter, wal).
+    z           'z' set refresh interval.
+    h,F1        show this tab.
+    q,Ctrl+Q    quit.
+
+Type 'q' or 'Esc' to continue.
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,40 @@
+{
+  "status": "needs_revision",
+  "checks": {
+    "architectural_fit": "pass",
+    "scalability": "n/a",
+    "database": "n/a",
+    "coupling": "pass",
+    "api_contracts": "n/a",
+    "backward_compat": "pass"
+  },
+  "findings": [
+    {
+      "check": "coupling",
+      "severity": "major",
+      "issue": "The Risks table misattributes the Wave-1 file-overlap it flags. It says 'Auto-scroll and the indicator both edit config.go', but per the task file lists, config.go's two NEW fields in Wave 1 are autoScrollToOrderKey (Task 1) and refresh (Task 2) — the filter indicator (Task 5, item 2) is Wave 2 and never touches config.go. The real, unmentioned fact is worse: Task 1 and Task 2 both list top/config.go, top/config_view.go AND top/stat.go as files to modify, and Task 4 also lists top/stat.go — three of the four 'independent' Wave 1 tasks touch stat.go concurrently, two of them touch config.go and config_view.go concurrently. The mitigation ('different fields, different functions, no shared semantics') is plausible on inspection (renderDbstat vs printSysstat/renderSysstat vs renderSysstatVerbose/renderPgstatVerbose are indeed separate functions), but the spec's own risk entry doesn't correctly name which items collide, which will misdirect whoever is watching for the merge conflict during Wave 1 execution.",
+      "location": "Risks table, row 'Auto-scroll and the indicator both edit config.go...'",
+      "fix": "Correct the row to name the actual overlapping tasks/items: config.go and config_view.go are shared by Task 1 (auto-scroll) and Task 2 (refresh interval); stat.go is shared by Tasks 1, 2 and 4. Keep the underlying claim (textual-only conflicts, disjoint functions) — it holds — just fix the item numbers before task-decomposition/execution uses this table to route review attention."
+    },
+    {
+      "check": "architectural_fit",
+      "severity": "minor",
+      "issue": "config.refresh (Decision: 'durable copy of the refresh interval') has no stated initial value at startup. The existing transient field it mirrors (config.view.Refresh) is explicitly seeded to time.Second in doWork (top/ui.go:82) before the first tick, and changeRefresh (top/config_view.go:438) is the only other writer. If Task 2 does not also seed config.refresh = time.Second at the same point, the header will render 'refresh: 0s' until the user first presses 'z' — a real user-visible regression versus 'no visible defect for a case that was never possible before.'",
+      "location": "Architecture > config.refresh (new field, top/config.go); Task 2",
+      "fix": "State explicitly (or let Task 2 verify) that config.refresh is seeded in the same place and to the same value as the app.config.view.Refresh = time.Second line in doWork, so the two stay in lockstep from the first frame."
+    },
+    {
+      "check": "coupling",
+      "severity": "minor",
+      "issue": "Test_renderPgstat_verboseNAWidthStatic and its sibling in stat_test.go currently assert the n/a-width invariant via strings.Index byte offsets on raw (unwrapped) strings. Decision 8 bolds only the value, not the n/a sentinel, so after Task 4 the value-present row gains ANSI bytes the n/a-row does not — byte offsets diverge even though visible-rune offsets stay identical. The tech-spec's own AC anticipates this ('repaired... not removed'), which is correct, but Task 4's description doesn't name the helper to reuse (visibleRuneLen / the ansiEscape regex already living in stat_test.go for the column-window tests) — worth calling out explicitly so the task doesn't reinvent SGR-stripping.",
+      "location": "Acceptance Criteria; Task 4 description",
+      "fix": "Point Task 4 (or its task file) at the existing visibleRuneLen/ansiEscape helpers in top/stat_test.go as the tool for repairing the byte-offset assertions, rather than leaving the fix path implicit."
+    }
+  ],
+  "risk_assessment": {
+    "performance": "low",
+    "complexity": "medium",
+    "tech_debt": "low"
+  },
+  "summary": "Solution fits the codebase's established patterns well (pure-function-plus-thin-plumbing, per ADR [009]/[010] precedent) and every load-bearing factual claim checked against the actual code held up (44 call sites, the pre-existing cmdline-timer race, topBandLayout's compact literals, the config.view.Refresh zero-after-send dependency, visibleColumns' genuine subtlety, the features-catalog.md contradiction). The one real problem is a documentation defect in the tech-spec's own Risks table that misnames which Wave-1 tasks collide on config.go/config_view.go/stat.go — not a design flaw, but it should be corrected before execution so the risk is watched in the right place; hence needs_revision rather than approved."
+}

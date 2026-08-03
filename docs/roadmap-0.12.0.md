@@ -17,8 +17,12 @@ Unreleased on `master`/`develop` since v0.11.0 (2026-06-22):
   first column) — closes issue #14, open since 2015
 - **[010-feat-overview-dashboard]** verbose mode for the summary panels (`v`)
 - **[011-refactor-tech-debt-paydown]** bounded report replay allocation + stable verbose panel widths
+- **[012-feat-pg19-compatibility-baseline]** PG 19 in the CI matrix and test image, verification pass
+  over every screen, additive progress-view columns — landed inside `9baa70d` (2026-07-26)
+- **[013-feat-activity-xmin-horizon]** `backend_xid`/`backend_xmin`/`horizon_xacts` and `leader_pid`
+  on the activity screen — `9baa70d` (2026-07-26)
 
-An early release of just these three was considered and **rejected**: it would only be insurance
+An early release of just the first three was considered and **rejected**: it would only be insurance
 against running out of time for further feature work, and that time is available. There are no
 external release deadlines on this project.
 
@@ -39,6 +43,12 @@ Two ordering rules fall out of the same principle:
 2. **Colorization precedes every new screen.** If color came last, each new screen would need a
    return visit to add its rules — N extra passes. Placed early, each new screen defines its own
    rules inside its own feature — zero extra passes.
+
+**Rule 2 no longer holds for this release.** [014] was deferred on 2026-08-02, so the screens added
+by [017]–[020] will ship without colorization rules and colour — whenever it lands — will have to
+revisit each of them. This is a known, accepted cost of the deferral, recorded here so it is not
+rediscovered as a surprise. Rule 1 is unaffected: [013] shipped, so the activity column layout is
+already final for whatever colour work follows.
 
 Each feature goes through the full SDD pipeline (user-spec → tech-spec → decompose → implement →
 review) **one at a time**, in the order below. Numbering continues from the archive (last
@@ -69,7 +79,7 @@ issue #122. TUI-first was never about saving effort — it was about not freezin
 
 ### [012] PostgreSQL 19 compatibility baseline
 
-- **Status:** planned — **do this first**. Probe passed 2026-07-25 on the existing `ubuntu:22.04` base:
+- **Status:** done — archived as `docs/features/archive/012-feat-pg19-compatibility-baseline`. Probe passed 2026-07-25 on the existing `ubuntu:22.04` base:
   PG 19 beta2 installs, the cluster starts on 21919, `plperlu` loads, and the three new columns are present
   in the live catalog. No base-image migration needed. The one non-obvious detail: the beta suite must be
   declared with the major-version **component** (`jammy-pgdg-testing 19`) — without it the packages are
@@ -95,9 +105,9 @@ issue #122. TUI-first was never about saving effort — it was about not freezin
        what you ask while staring at a long vacuum.
      - `pg_stat_wal_receiver`: new `connecting` status value (display-only, no code change).
 - **Deliberately NOT here** (this is the anti-rework boundary): the PG 19 WAL full-page-image column
-  goes to [016] with the rest of the WAL area; the `pg_stat_replication_slots` columns go to [018]
+  goes to [017] with the rest of the WAL area; the `pg_stat_replication_slots` columns go to [019]
   with the rest of the replication area; `stats_reset`/`stats_age` on tables/indexes/functions goes
-  to [017] with the tables area. Adding them here would mean entering all three areas twice.
+  to [018] with the tables area. Adding them here would mean entering all three areas twice.
 - **Risk to retire on day one:** PG 19 beta packages live in a **separate PGDG repository**
   (`pgdg-testing`), not the main one. If beta packages cannot be installed in CI, the whole PG 19
   block needs replanning — probe this **before writing any query**, not on the third feature.
@@ -109,7 +119,7 @@ issue #122. TUI-first was never about saving effort — it was about not freezin
 
 ### [013] Activity screen: xmin horizon + parallel worker grouping
 
-- **Status:** planned
+- **Status:** done — archived as `docs/features/archive/013-feat-activity-xmin-horizon`
 - **Value:** high, daily. Closes issue #148. Today the activity screen cannot answer "is this
   idle-in-transaction session holding the xmin horizon and blocking vacuum?" — that needs `psql`.
   Second scope item: on PG 14+ parallel workers clutter the screen with no way to attribute them to
@@ -141,7 +151,33 @@ issue #122. TUI-first was never about saving effort — it was about not freezin
 
 ### [014] Row colorization
 
-- **Status:** planned
+- **Status:** **deferred** (2026-08-02) — pulled out of 0.12.0 by the roadmap owner during user-spec
+  work, pending a discovery pass. The trigger was a product question the spec could not settle:
+  whether pgcenter wants **semantic row rules** (the shape below) or the **procps-`top` model** — a
+  static per-region palette (`Z`) the operator picks and a config file (`W` → `~/.toprc`) that
+  remembers it. Those are different products, and the second one needs a settings subsystem this
+  project does not have. Revisit after discovery; no target release.
+- **Discovery already done — start here, do not re-derive:**
+  - **`dim` is not renderable as specified.** The TUI runs `gocui.OutputNormal` (`top/ui.go:19`) and
+    gocui — not the terminal — parses the escape sequences. `jroimartin/gocui@v0.5.0`
+    `escape.go:outputNormal` accepts fg `30–37`, bg `40–47`, `39`/`49` and attributes `1` (bold),
+    `4` (underline), `7` (reverse), `0` (reset). SGR `2` has no case and is **silently ignored**, so
+    "auxiliary/autovacuum backends → dim" would render as ordinary text.
+  - **Switching to `Output256` is backward-compatible** — verified by reading `escape.go:output256`:
+    it falls back to `outputNormal()` when the parameter list is shorter than 3 or when
+    `csiParam[1] != 5`, so every sequence already in the codebase (`\033[37;1m`, `\033[30;47m`,
+    `\033[30;47;1m`, `\033[0m`) keeps working unchanged. It adds `38;5;N`, including the grey shades
+    that would give a real dim. Cost: a dependency on 256-colour terminal support.
+  - **There is no user config file anywhere in the project.** `HOME`/`os.UserHomeDir` are never used.
+    `pgcenter config` (`config/config.go`) installs the PL/Perl **schema into the database** — despite
+    the name it stores no settings; the README's "configuration management" is viewing/editing
+    **`postgresql.conf`** (hotkey `C`). So the `top`-style palette is gated on a from-scratch
+    settings subsystem (location, format, load, save, precedence against CLI flags), which is its own
+    feature — plausibly L — and is not on this roadmap.
+  - **The render path is ready either way.** `printHeaderCell` (`top/stat.go:897`) already emits ANSI
+    and wraps the *padded* string (`\033[..m%-*s\033[0m`); `printDataCell` (`top/stat.go:1000`) does
+    not. Since [009] both printers take an `io.Writer`, so colour rules are unit-testable against a
+    `bytes.Buffer` with no live terminal and no Postgres.
 - **Value:** medium, but high *perceived* — this is what makes competing TUIs feel faster to read.
   Anomalies are currently invisible until you read every row.
 - **Shape:** attributes on **data** rows. The mechanism already half-exists — the header row emits
@@ -167,14 +203,34 @@ issue #122. TUI-first was never about saving effort — it was about not freezin
 
 ### [015] TUI papercuts batch
 
-- **Status:** planned
+- **Status:** in progress — user-spec written. **Scope changed during spec work (2026-08-02):**
+  pause on `Space` was **split off into its own feature** (now [016]), and the batch gained four
+  items not listed below. Actual scope, seven items: auto-scroll to the sort column, the filter
+  indicator, a clear-all-filters hotkey (`\`), the refresh interval in the header, two verbose-mode
+  defects (a wasted blank line between cmdline and the table; verbose values never bolded, unlike
+  the base rows), and a dialog-geometry fix on both axes. Item 4 below also loses its clock half —
+  the header has shown the clock since forever (`top/stat.go:272`); only the interval was missing.
+  The four-item list below is the original plan, kept for the record — it is superseded by
+  `docs/features/015-feat-tui-papercuts/015-feat-tui-papercuts.md`.
+- **Why the pause was split off:** validation found two blockers that only surface in code.
+  Sorting runs in the **collector** goroutine (`calculateDelta` → `delta.sort`), not at render
+  time, so changing the sort column while paused would leave a highlighted column that does not
+  explain the row order — and the auto-scroll item of this same batch would dutifully scroll to
+  it. And returning from the pager while paused would land on an empty screen: the UI is rebuilt
+  from scratch, the old buffers are gone, and the pause gate discards every incoming frame — the
+  exact outcome the spec calls the worst one. Both need product decisions of their own (settled:
+  changing the sort order lifts the pause), and the pause is also the only item in the batch
+  requiring cross-goroutine synchronisation and last-frame storage. The seam is clean: everything
+  remaining lives in the gocui goroutine, and the pause later adds a second token to the cmdline
+  composer this feature establishes.
 - **Value:** medium in aggregate, each item small. These are the frictions that make the TUI slower
   to drive. Batched as one feature because each is a handful of lines in `top/`, and separate SDD
   cycles would cost more than the code.
 - **Why not merged with [014]:** both touch `top/`, but they touch *different functions* — color
   lives in the cell renderers, these live in keybindings, the column-window logic and the cmdline.
-  Merging would produce an incoherent spec without saving a pass. Sequenced adjacently instead, so
-  the render-layer context is warm.
+  Merging would produce an incoherent spec without saving a pass. The original plan sequenced them
+  adjacently to keep the render-layer context warm; with [014] deferred that no longer applies, and
+  this batch stands on its own — it never depended on [014], only on being next to it.
 - **Scope (four items):**
   1. **Pause on `Space`.** Every top-like tool has it; pgcenter has no `Space` binding at all. Must
      show `PAUSED` in the cmdline so a frozen screen is never mistaken for a quiet cluster.
@@ -198,7 +254,46 @@ issue #122. TUI-first was never about saving effort — it was about not freezin
 - **Plumbing:** `top/keybindings.go`, `top/layout.go`, `top/stat.go`, `top/config_view.go`. No query
   changes, no new views.
 
-### [016] WAL and archiving area — one pass
+### [016] Pause the display on `Space`
+
+- **Status:** planned — **split off from [015] on 2026-08-02**, and placed **immediately after it**
+  by the roadmap owner; the area passes were renumbered [016]–[019] → [017]–[020] to make room. The
+  reason for this position: the cmdline composer [015] establishes is exactly what this feature
+  extends, so the two are cheapest back to back.
+- **Value:** every top-like tool has it; pgcenter has no `Space` binding at all. Honest framing
+  carried over from the [015] interview: this is argued **by analogy**, not from a reported
+  incident — unlike the auto-scroll (a recorded [009] limitation) or the filter indicator (a real
+  misreading risk). A counterargument worth weighing before committing: `z` already accepts a
+  refresh interval up to 300 seconds, and pgcenter almost always runs inside tmux, which has
+  copy-mode.
+- **Settled during the [015] interview — do not re-open:**
+  - Pause gates the **render only**; the collector keeps running. Stopping it would freeze `prev`
+    at pause start, and the first frame after resume would show the delta for the whole pause
+    window in per-interval columns (10 minutes paused at `refresh=1s` → ~600× normal).
+  - `statCh` is **unbuffered** (`top/ui.go:73`), so pause must **drain and discard** frames, not
+    just skip rendering — otherwise the collector blocks and a stale frame renders on resume.
+  - The last frame must be **stored**: a terminal resize or a verbose toggle while paused
+    recomputes the layout and repaints that same frame.
+  - **Changing the sort column lifts the pause** — sorting runs in the collector goroutine
+    (`calculateDelta` → `delta.sort`), so a new row order cannot be produced at render time.
+    Switching screens lifts it too.
+  - The flag is the batch's **only cross-goroutine race** (written by the key handler, read by
+    `doWork`): `atomic.Bool`, and it lives on `config`, not in a `doWork` local — otherwise it is
+    lost every time the UI is rebuilt.
+  - Bind `gocui.KeySpace` (not the rune) and scope it to `"sysstat"`, never globally — a global
+    binding makes it impossible to type a space into any dialog.
+- **Open question for the spec:** returning from the pager/editor while paused. The UI is rebuilt
+  and the old buffers are destroyed, so "the pause survives" requires an explicit repaint from the
+  stored frame; the alternative is to lift the pause on return. Not decided.
+- **Caveat on the error path:** "frames carrying an error bypass the pause gate" is weaker than it
+  sounds — **tech-debt register item [016]** (`docs/tech-debt.md`, not this roadmap's [016]) records
+  that some collector errors are swallowed and arrive as an empty frame rather than one with
+  `Error` set.
+- **Plumbing:** `top/ui.go` (the `statCh` branch in `doWork`), `top/config.go`,
+  `top/keybindings.go`, `top/help.go`. The cmdline composer is already in place from [015] — this
+  adds a `[PAUSED]` token to the left of `[F:...]`.
+
+### [017] WAL and archiving area — one pass
 
 - **Status:** planned
 - **Value:** medium — low frequency, high severity (archiving failure → WAL accumulation → disk
@@ -221,7 +316,7 @@ issue #122. TUI-first was never about saving effort — it was about not freezin
 - **Plumbing:** new view `archiver`, `internal/query/archiver.go`. `pg_stat_archiver` is stable since
   PG 9.0 — no version branching for it; the FPI column needs a PG 19 branch in `wal.go`.
 
-### [017] Tables and autovacuum area — one pass
+### [018] Tables and autovacuum area — one pass
 
 - **Status:** planned
 - **Value:** `pg_stat_autovacuum_scores` is **the most valuable new view in PG 19** for this
@@ -246,7 +341,7 @@ issue #122. TUI-first was never about saving effort — it was about not freezin
 - **Plumbing:** new `internal/query/autovacuum_scores.go`; multi-row view model shared with `tables`.
   `stats_age` additions touch `tables.go`, `indexes.go`, `functions.go` and their report layouts.
 
-### [018] Replication and recovery area — one pass
+### [019] Replication and recovery area — one pass
 
 - **Status:** planned — the heaviest of the area passes (candidate for a tech-spec-time split)
 - **Value:** three distinct gaps closed in one visit to the same area.
@@ -281,7 +376,7 @@ issue #122. TUI-first was never about saving effort — it was about not freezin
   `internal/query/subscription.go` and `internal/query/recovery.go`, `o`/`O` menu group,
   `internal/postgres/testing.go` (standby fixture) + CI.
 
-### [019] Contention area: `pg_locks` + `pg_blocking_pids()` + `pg_stat_lock` — one pass
+### [020] Contention area: `pg_locks` + `pg_blocking_pids()` + `pg_stat_lock` — one pass
 
 - **Status:** planned — last, biggest, highest risk
 - **Value:** highest of the troubleshooting half, and pgcenter's biggest **functional** gap for
@@ -318,7 +413,7 @@ issue #122. TUI-first was never about saving effort — it was about not freezin
   - Show all `locktype`s, not just relation-level — `transactionid`/`tuple` waits are exactly the
     interesting ones.
 - **Why last:** by this point every pattern it needs is established — the PG 19 branch style [012],
-  colorization rules [014], the cycle/menu machinery [016]/[017]/[018].
+  colorization rules [014], the cycle/menu machinery [017]/[018]/[019].
 - **Plumbing:** new view(s) under a `locks`/`contention` group, new `internal/query/locks.go`,
   multi-row snapshot view model shared with `activity`. `pg_blocking_pids()` exists since 9.6 — no
   version branching for the base query.
@@ -326,14 +421,14 @@ issue #122. TUI-first was never about saving effort — it was about not freezin
 ## Cross-cutting principles
 
 **Do not make an incident worse.** Any query added here must be cheap on a cluster that is *already*
-in trouble — precisely when these screens get opened. Concretely: [019]'s `pg_blocking_pids()`
+in trouble — precisely when these screens get opened. Concretely: [020]'s `pg_blocking_pids()`
 gating, and no new unconditional per-tick privileged calls.
 
 **Monochrome stays first-class.** [014] adds color as an enhancement, never a requirement:
 `NO_COLOR` and `--no-color` produce exactly today's output.
 
 **New-view column sets are settled against the live catalog**, not the release notes — for every
-PG 19 view in [017], [018] and [019].
+PG 19 view in [018], [019] and [020].
 
 **record/report is decided per view by design risk** — see the cross-cutting policy above.
 
@@ -353,7 +448,7 @@ PG 19 view in [017], [018] and [019].
 - **`pg_stat_progress_data_checksums`** (new in PG 19) — progress of online checksum enabling. Same
   origin and same reasoning as above, but a weaker fit: this is cluster maintenance rather than
   statistics monitoring, so its place in pgcenter deserves its own discussion. Candidate for 0.13.0.
-- **Recursive lock-wait chain (tree) rendering** — [019] ships `blocker_pids` as a list.
+- **Recursive lock-wait chain (tree) rendering** — [020] ships `blocker_pids` as a list.
 - **Full "who holds the xmin horizon" aggregate** across all four sources (backends, replication
   slots, prepared transactions, standby feedback). [013] covers the backend source only — the one on
   the activity screen; the complete answer is arguably its own small screen or verbose row.
@@ -361,8 +456,8 @@ PG 19 view in [017], [018] and [019].
 - **`EXPLAIN ANALYZE` AIO statistics** (new `IO` option in PG 19) — pgcenter does not run EXPLAIN;
   noted so it is not mistaken for an oversight.
 - **`pg_dsm_registry_allocations`** (new in PG 19) — shared-memory internals, not an ops screen.
-- **Logging facility** (`--log-file`) — tech debt [016]; still blocked on the same product decision,
-  unchanged by this release.
+- **Logging facility** (`--log-file`) — tech-debt register item [016] (`docs/tech-debt.md`, not this
+  roadmap's [016]); still blocked on the same product decision, unchanged by this release.
 - **Per-value threshold coloring / configurable color scheme** — explicitly rejected for [014].
 
 ## Finalization
@@ -370,7 +465,7 @@ PG 19 view in [017], [018] and [019].
 - [ ] PG 19 re-verification pass at RC/GA (CI matrix) — does not block the release
 - [ ] Update `overview.md` (PG 19 in supported versions, new screens, new activity columns, color mode)
 - [ ] Update `features-catalog.md` per feature
-- [ ] Update `docs/decisions-log.md`; close tech debt [006] and [010] if [018]'s standby fixture
+- [ ] Update `docs/decisions-log.md`; close tech debt [006] and [010] if [019]'s standby fixture
       retires them
 - [ ] Update the built-in help screen (`top/help.go`) — new hotkeys (`c`, `Space`) and the `w`/`W`,
       `t`/`T`, `o`/`O` cycles

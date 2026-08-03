@@ -1,0 +1,77 @@
+{
+  "status": "pass",
+  "round": 2,
+  "sources": {
+    "user_spec": true,
+    "tech_spec": true,
+    "tasks": true
+  },
+  "tasks_note": "Still no separate task files (docs/features/015-.../*-task-NN.md). The nine tasks live in the tech-spec 'Implementation Tasks' section and were validated from there, together with the new wave-partition table.",
+  "round1_status": {
+    "critical_gap_US5_autoscroll_reset": "CLOSED — Decision 8 covers both paths (viewSwitchHandler and switchViewToProcPidStat, reset placed before the db.Local guard for testability), Architecture repeats it, Testing Strategy has a dedicated entry, Task 4's description mentions it ('the pending request must not leak into another screen'), verify row 4 names it. Code checked: top/config_view.go:243 and :257 are the two reset sites, :259 is the db.Local guard — the decision matches reality.",
+    "final_wave_ownership": "CLOSED — Task 8 is alone in Wave 4, owns fixing what it finds with an explicit escalation rule, has a Verify line, and both rows 8 and 9 exist in the per-task table.",
+    "wave1_file_contention": "CLOSED — repartitioned. Verified task-by-task: no file appears twice within Wave 1, 2 or 3, the wave-partition table matches every task's 'Files to modify' list exactly, and every shared file is written by a later wave than its previous writer (stat.go 2→4→6, config_view.go 3→4→6, config.go 4→6, top.go 5→6, ui.go 5→6, dialog.go 5→7).",
+    "startup_refresh_default": "CLOSED — Decision 7 introduces a shared defaultRefresh constant used at both the UI-state init and collector-seed sites, verify row 6 asserts 'the seeded default before any z'. Task 6's file list contains all three sites (config.go, ui.go for doWork, config_view.go for changeRefresh). No CLI refresh flag exists, so a single constant is sufficient.",
+    "empty_result_autoscroll_test": "CLOSED — added to the scrollOffsetFor test list and to verify row 4.",
+    "decision9_naInt_direction": "VERIFIED CORRECT — top/stat.go:519 naInt returns naReserve(width) when !hasPrev and the formatted number otherwise; Decision 9 now puts bold in the value branch. The bgwr/ckpt locals (writeMs, syncMs, maxw, stat.go:594) and the databases/replication locals (size, growth, hit, lag, retain, backlog, stat.go:541-578) are named accurately.",
+    "structural_gap_task_rationale": "PARTIALLY CLOSED — see finding below.",
+    "US20_bold_narrowing": "STILL OPEN — see finding below.",
+    "indicator_after_UI_recreation": "STILL OPEN — see finding below."
+  },
+  "requirements_total": 27,
+  "requirements_covered": 26,
+  "requirements_partial": 1,
+  "requirements_missing": 0,
+  "findings": [
+    {
+      "type": "gap",
+      "source": "tech-spec",
+      "requirement": "Decision 14: the clear timer must not outlive its UI",
+      "detail": "The newest decision is the only one with no landing place, and its mechanism does not survive contact with the code. (a) No task description mentions it, no Testing Strategy entry covers it, no per-task verification row names it, and no tech-spec acceptance criterion asserts it — by elimination it lands in Task 5 (the only owner of top/ui.go), but nothing says so. (b) 'The app context' does not exist in the form the decision assumes. RunMain passes context.Background() into mainLoop (top/top.go:29); the cancellable context is created *inside* mainLoop's restart loop (top/ui.go:33, `ctx, cancel := context.WithCancel(ctx)`) and replaced on every iteration. printCmdline (top/ui.go:207) takes only (g, format, args) and has no context, no app and no config in scope — that is precisely why Decision 1 introduces the ambient cmdlineCfg. So the guard needs a second ambient value that is re-written once per mainLoop iteration, which directly contradicts Decision 1's 'written exactly once, before any goroutine exists' discipline; and the naive reading (capture the context available in RunMain) yields a context that is never cancelled, i.e. an inert guard that looks implemented and passes review. Fix: state where the context comes from (mainLoop's per-iteration ctx is the only correct one), how it reaches printCmdline, why re-writing it per iteration is safe (it happens after MainLoop returns, when no g.Update closure runs), name Task 5 as the owner, and add a verification line. The rationale itself checks out: mainLoop replaces `g` on the error path without closing it (top/ui.go:19-23), so an undrained 20-slot Update channel is a real possibility once the callback moves onto g.Update.",
+      "severity": "major"
+    },
+    {
+      "type": "structural_gap",
+      "source": "tech-spec",
+      "requirement": "Decisions section self-containment",
+      "detail": "Round 1's finding is only half addressed. Task 6 was trimmed from the full rationale to one clause — 'The existing transient field cannot carry it' — but that clause is still the load-bearing choice (new config.refresh over the existing view.View.Refresh), and the Decisions section still does not carry it: Decision 7 covers the %ds format and the shared default, not the choice of a separate field. The justification lives only in the Architecture bullet and the Data Models comment. Verified as a real constraint: top/config_view.go:454-456 sets then immediately zeroes view.Refresh, and the collector branches on that. Task 1 is unchanged ('the verbose branch computes the table's top independently of the cmdline while the compact branch ties them together'), but that one reads as root-cause scope description rather than an architectural choice — acceptable in a task. Fix: one sentence in Decision 7 ('config.refresh is a new field because view.View.Refresh is a transient courier whose zeroing is load-bearing for the collector's branch order'), then Task 6 needs no rationale at all.",
+      "severity": "major"
+    },
+    {
+      "type": "partial",
+      "source": "user-spec",
+      "requirement": "US-20: Значения verbose-секций обеих панелей выделены жирным, сентинелы n/a — нет",
+      "detail": "Unchanged from round 1 and still an owner decision, not a defect. Decision 9's factual error is fixed, but the criterion is still narrowed on the tech-spec's own authority in two places: the filesystem identifier fields (device, mountpoint, fstype) stay plain, and the four pretty.RateUnitPrefixed sites bold the unit together with the number. Both narrowings are now stated explicitly with reasoning, which is the right place for them — but the stand check ('bold present on values, absent on sentinels and identifiers', verify row 2) is written to the narrowed reading, so nothing downstream will surface the divergence. Wants an explicit owner ack when the tech-spec is approved, nothing more.",
+      "severity": "minor"
+    },
+    {
+      "type": "partial",
+      "source": "tech-spec",
+      "requirement": "Task 5 owns four decisions; its description and gate name two",
+      "detail": "Task 5's description covers the composer (Decisions 1, 2, 6, 12) and the no-timer writer variant, and verify row 5 checks 'composeCmdline ladder and the two-token case; filterToken deterministic ordering'. Two further decisions land in the same task and appear in neither: Decision 10 (the clear timer re-renders through g.Update instead of calling v.Clear() from a bare goroutine — the change that removes the pre-existing race at top/ui.go:227-230) and Decision 13 (control-rune stripping in filterToken). Both are recoverable — each has a tech-spec acceptance criterion and Decision 13 has a Testing Strategy entry — so `make test` would catch a missing sanitiser. Still, the wave gate for the task that must implement them mentions neither, and Decision 13's test is the only thing standing between a crafted database object name and a persistent terminal state change. Add both to verify row 5.",
+      "severity": "minor"
+    },
+    {
+      "type": "partial",
+      "source": "user-spec",
+      "requirement": "AC 'Приглашение диалога не стирается через две секунды' and AC 'Экран справки документирует \\'",
+      "detail": "Both criteria are implemented by a task (printCmdlinePersist in Task 5; top/help.go in Task 3's file list) but neither is reachable through a *named* verification step. Neither is unit-testable (printCmdlinePersist is gocui-facing; the help text is a string constant that no test asserts), verify rows 3 and 5 do not mention them, and the only thing that covers them is Task 8's generic 'all seven user-visible behaviours'. The user-spec's own 'Как проверить' table does have a Справка row, so the material exists — it just has not been carried into the per-task gates. Task 8's description enumerates four specific stand checks (bold, blank line, auto-scroll, longest dialog) and these two are not among them; adding 'help screen shows \\' and 'open a dialog, wait 3s, prompt still there' to that enumeration closes it. Same class, smaller: the vertical dialog axis (Decision 11) is stand-only — verify row 7 checks dialogInputX0 (horizontal) alone.",
+      "severity": "minor"
+    },
+    {
+      "type": "underengineering",
+      "source": "tech-spec",
+      "requirement": "Task 8 fix authority has no quality gate",
+      "detail": "Closing the round-1 ownership gap gave Task 8 the right to modify 'whichever file carries a defect found on the stand', but it kept 'Reviewers: none' and a Verify line that is the stand run only. Every other code-touching task in the spec is gated by dev-code-reviewer + dev-test-reviewer and `make test`. So a fix written under stand pressure — plausibly in stat.go or ui.go, the files with the subtlest invariants — is the one change in the feature that ships unreviewed and without a regression test being required. Task 9 does run make test/lint/vuln afterwards, which limits the blast radius to 'compiles and existing tests pass', so this is a gap in the gate rather than an open hole. Fix: give Task 8 the same reviewer set and add `make test` to its Verify line, conditional on it having changed code.",
+      "severity": "minor"
+    },
+    {
+      "type": "partial",
+      "source": "user-spec",
+      "requirement": "Ключевые компоненты: индикатор 'переживает обновление, переключение экрана и любое транзитное сообщение'",
+      "detail": "Unchanged from round 1 and still unstated. The single-composition-point design redraws the indicator on the next cmdline WRITE, which covers every approved acceptance criterion (both screen-switch paths write a message; Decision 10 makes the timer re-render). The one uncovered case is UI recreation: mainLoop rebuilds the Gui after a pager/editor exit or a UI error (top/ui.go:17-23), producing a fresh empty cmdline that layout() only writes to for app.uiError — the indicator stays blank until the user triggers some message. Not an approved AC (pager/pause interaction was moved to feature [016]), and the Risks table already carries one 'pre-existing, out of scope' entry of exactly this shape (dialog coordinates on resize). Worth one more row there rather than being left unstated — especially now that Decision 14 discusses that same restart path in detail.",
+      "severity": "minor"
+    }
+  ],
+  "summary": "PASS — no critical findings. All 27 user-spec acceptance criteria now reach a task, and 26 of 27 reach a named verification step. Round 1's critical gap (US-5, auto-scroll flag reset on both switch paths) is genuinely closed: Decision 8, Architecture, the test list, Task 4's description and verify row 4 all carry it, and the two reset sites plus the db.Local guard are where the decision says they are. The Final Wave ownership gap and the Wave-1 file contention are closed too — the wave partition was re-verified task by task against the file lists, no file repeats inside a wave, and every shared file is written by a strictly later wave than its previous writer. Decision 9's naInt direction is now correct against the code, and Decision 7's defaultRefresh closes the 'refresh: 0s before the first z' minor. No scope creep: the two new decisions (13 control-rune stripping, 14 timer context guard) are security/lifecycle hygiene for surfaces this feature itself creates, not new functionality. No overengineering: task descriptions remain brief scope statements with no pseudocode. Two majors remain. Decision 14 is the substantive one — it has no owning task, no test, no verification row and no acceptance criterion, and 'the app context' it relies on does not exist in that shape: RunMain hands mainLoop a context.Background(), while the cancellable context is created and replaced inside mainLoop's restart loop, and printCmdline has no context in scope at all, so the guard as written would either need a second ambient value re-set per iteration (contradicting Decision 1's write-once discipline) or would silently be inert. The other major is round 1's structural gap, half closed: Task 6's rationale was trimmed but the choice of a new config.refresh field over the transient view.View.Refresh still has no home in the Decisions section. Four minors: Task 5's gate omits two decisions it owns (the g.Update timer move and the control-rune stripping), two ACs (dialog prompt persistence, help screen entry) rely on Task 8's generic stand sweep rather than a named step, Task 8 now fixes code with no reviewers and no make test on its own gate, and the indicator's blank state after UI recreation is still unrecorded as a known limitation."
+}

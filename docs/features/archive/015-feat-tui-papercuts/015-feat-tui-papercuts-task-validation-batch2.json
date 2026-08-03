@@ -1,0 +1,103 @@
+{
+  "validator": "dev-task-validator",
+  "feature_base": "docs/features/015-feat-tui-papercuts/015-feat-tui-papercuts",
+  "tasks_checked": ["06", "07", "08", "09"],
+  "iteration": 1,
+  "status": "changes_required",
+  "verified_no_finding": [
+    "Tasks 08 and 09 have deleted the TDD Anchor section entirely (not stubbed, not filled) — correct for non-code tasks.",
+    "Tasks 08 and 09 carry skills: [pre-deploy-qa] with reviewers: [] and matching 'no reviewers' prose in the Reviewers section — deliberate and correct, not flagged.",
+    "Task 08 writes no code: Description, What to do step 24, Acceptance Criteria ('no code file was modified by this task'), Details ('Files: none modified') and the ownership routing table all state it consistently. No claim to fix anything anywhere in the file.",
+    "Tasks 06 and 07 carry reviewers: [dev-code-reviewer, dev-test-reviewer]; dev-security-auditor correctly absent per the tech-spec Implementation Tasks preamble.",
+    "Wave/depends_on match the tech-spec wave-partition table exactly: 06 wave 3 depends_on [04,05]; 07 wave 3 depends_on [01,05]; 08 wave 4 depends_on [06,07]; 09 wave 5 depends_on [08]. No cycles; every dependency lands in a strictly earlier wave.",
+    "No file overlap between 06 (config.go, top.go, ui.go, config_view.go, stat.go, stat_test.go, config_view_test.go) and 07 (dialog.go, dialog_test.go) — the only two tasks sharing wave 3. Task 07 explicitly forbids itself from touching ui.go/layout.go.",
+    "All TDD anchors in 06 and 07 name concrete test functions in concrete files; every existing test named (Test_renderSysstat_compact, Test_renderSysstat_compactUnchanged, Test_changeRefresh) was confirmed to exist at the quoted location.",
+    "TDD carry-forward from tech-spec Testing Strategy for dialogInputX0 (normal prompt, prompt longer than terminal, prompt plus indicator, reserved minimum, rune-vs-byte with the ellipsis, property test over the input domain) is complete in task 07, with two extra named regression tests.",
+    "Acceptance criteria of 06 and 07 trace to the user-spec: 'Интервал обновления' (2 criteria) and 'Диалоги' (5 criteria) are all present, most of them detailed further.",
+    "Task 09's criterion counts were checked against the documents: 27 user-spec checkboxes (5+9+2+2+3+5+1) and 11 tech-spec checkboxes — both correct.",
+    "No pseudocode in any of the four tasks. The only code block (task 07 Description) quotes the existing top/dialog.go:79 line verbatim.",
+    "Mandatory project-knowledge context present in all four: this project has overview.md in place of project.md (task 08 documents the substitution), plus architecture.md and patterns.md.",
+    "patterns.md section 'Driving the TUI on a remote test stand' (line 180) exists as referenced by task 08; the 93-character dialogSetMask prompt, the activity-only guard, the '[' / ']' scroll keys and the tracked logs/working/qa-report.json claim were all confirmed against the codebase."
+  ],
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "carry-forward",
+      "task": "06",
+      "section": "TDD Anchor",
+      "issue": "The seeded default has no TDD anchor. Tech-spec Agent Verification Plan, row for task 6, requires `make test` to show 'refresh: <N>s at 1/60/300s AND the seeded default before any z'. Task 06's own Acceptance Criteria carries it ('Before any `z` press the header shows the seeded default (`refresh: 1s`), not `refresh: 0s`') and What to do step 2 implements it in `app.setup()` — but none of the five anchors touch `app.setup()`, and `top/top_test.go` appears in neither Context Files nor Details/Files. The seed is therefore verified only on the stand (task 08 step 4), one wave later, which is not what the tech-spec's verify column promises. `Test_renderSysstat_refreshFormat` passes an explicit duration and proves nothing about the seed.",
+      "fix": "Add a sixth anchor: `top/top_test.go::Test_app_setup` — after `app.setup()` returns, `app.config.refresh == defaultRefresh`. Add `top/top_test.go` to Context Files and to Details/Files. `Test_app_setup` already exists (top/top_test.go:18) and already opens a test PG connection, so no new environment dependency is introduced. No wave-3 conflict: task 07 touches only dialog.go/dialog_test.go, so top_test.go is free. Note in Post-completion that this file is an addition to the tech-spec's declared file set for task 6."
+    },
+    {
+      "severity": "major",
+      "category": "content",
+      "task": "09",
+      "section": "Details → Dependencies",
+      "issue": "The task states 'Живой PostgreSQL не нужен: ни один unit-тест фичи его не требует' and, in Description, that 'Фаза 1 скилла pre-deploy-qa (Environment Rebuild) сводится к `make build`'. Both are wrong for this task's own first acceptance criterion. `make test` runs `go test ./...`, and `top/top_test.go` (`Test_newApp`, `Test_app_setup`) calls `postgres.NewTestConnect()` → PG 17 on port 21917 (internal/postgres/testing.go:11-30). Without the `lesovsky/pgcenter-testing:0.0.11` container (deployment.md:33-38, architecture.md:154-157, .github/workflows/default.yml:9) `make test` cannot go green. The QA gate would then report a connection failure as a feature FAIL or a blocker — a false negative produced by the gate's own stated prerequisites. The task already lists deployment.md in Context Files, which documents the container, so the file contradicts itself.",
+      "fix": "Rewrite Environment Rebuild as: start the `lesovsky/pgcenter-testing:0.0.11` container (PG 14-19 on ports 21914-21919), then `make build`. Replace the Dependencies bullet with: 'The feature's own new tests need no live PostgreSQL, but the existing suite does — `make test` will not run at all without the test container. A connection failure is an environment problem, not a feature FAIL.'"
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": "06",
+      "section": "What to do / Details",
+      "issue": "Wrong call-site count. Step 7 says 'Update the five test call sites of `renderSysstat`' and Details repeats 'five literal `renderSysstat(` call sites', then enumerates them as one in Test_renderSysstat_compact + one in the verboseSysstatLines helper + two in Test_renderSysstat_compactUnchanged — which is four, and four is what `top/stat_test.go` actually contains (lines 59, 150, 284, 285). The tech-spec's '5 for renderSysstat including tests' is correct because it counts the production call inside `printSysstat`; the task dropped that one and kept the number.",
+      "fix": "State: four test call sites in `top/stat_test.go` plus the single production call inside `printSysstat` (`top/stat.go`), five in total — which is what the tech-spec's Backward Compatibility section counts."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": "07",
+      "section": "What to do / Details → Edge cases",
+      "issue": "Two design decisions are delegated to the implementing agent rather than pinned. Step 5 says to 'выбрать поведение' for degenerate geometry (`g.Size()` returning zeros after a return from pager/editor/psql) and record the choice in the decisions log; the Edge cases block does the same for a terminal narrower than `minDialogInputWidth`. Neither case has a decision in the tech-spec, and neither has a TDD anchor — while `Test_dialogInputX0AlwaysLeftOfX1` is scoped to 'the input domain declared in the function comment', a domain defined by the very guard that has not been decided. The property test's coverage is therefore not determined until after the implementer has chosen.",
+      "fix": "Pin both behaviours in the task. Recommended, matching the existing style of the view-name guards at dialog.go:51-74: on `maxX <= 0 || maxY <= 0`, or on a terminal too narrow for `minDialogInputWidth` usable columns, print a message to the cmdline and return nil without calling SetView. Then add an anchor — e.g. `top/dialog_test.go::Test_dialogGeometryGuard` — and state the resulting input domain explicitly in the property test's description instead of deferring it to a comment that does not exist yet. If the choice must stay open, escalate it to the tech-spec before wave 3 starts rather than settling it inside an unreviewable free choice."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": "09",
+      "section": "Details → Edge cases",
+      "issue": "The 'a test can exist and still check the wrong thing — read the body' list names four criteria (the `n/a` width invariant, `x0 < x1` in dialogInputX0, the two-token case in composeCmdline, deterministic ordering in filterToken) but omits tech-spec Acceptance Criterion 8 / Decision 13: a column name carrying escape sequences must not leave the terminal in a changed state through the indicator. That is the feature's only security-relevant assertion, and `dev-security-auditor` is deliberately absent from every reviewer set in this feature, so this QA gate is the last thing standing between a nominally-present sanitisation test and none. The blanket 'все критерии tech-spec обойдены поимённо' covers it only by name.",
+      "fix": "Add the sanitisation criterion to the read-the-body list: confirm filterToken's control-rune test actually feeds a name containing `\\033[31m` and asserts both that the runes are gone and that the rune count used by the truncation ladder is unaffected."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": "06",
+      "section": "Context Files",
+      "issue": "Link targets are repo-root-relative and do not resolve from the task file's own directory: `[top/config.go](top/config.go)` resolves to `docs/features/015-feat-tui-papercuts/top/config.go`, and the same applies to every feature-artifact and project-knowledge link. Tasks 01, 03, 05, 07 and 08 in this feature use `../../../`-prefixed paths that do resolve. The split is batch-wide (02 and 04 share the defect with 06), so fixing it here should be done together with them.",
+      "fix": "Normalise to file-relative paths: `[015-feat-tui-papercuts.md](015-feat-tui-papercuts.md)`, `[architecture.md](../../../.claude/skills/project-knowledge/architecture.md)`, `[top/config.go](../../../top/config.go)`, matching tasks 01/03/05/07/08."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": "09",
+      "section": "Context Files",
+      "issue": "Same unresolvable repo-root-relative link targets as task 06 (`.claude/skills/...`, `docs/features/...`, `Makefile`, `docs/tech-debt.md`). Additionally `[top/](top/)` points at a directory rather than a file, so it names no reviewable artifact — the nine files it stands for are listed only in the link's trailing prose.",
+      "fix": "Normalise the paths to `../../../`-prefixed form, and replace the directory link with the individual files the QA run actually reads, or drop the link and keep the prose list."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": "06",
+      "section": "Reviewers",
+      "issue": "The Reviewers section lists the two reviewers without the note explaining that `dev-security-auditor` is omitted deliberately. Task 07 carries that note in full, quoting the tech-spec's Implementation Tasks preamble and its instruction 'Do not restore the default reviewer set during decomposition'. Without it, a later re-validation or a fix-mode run against task 06 alone sees a code-writing task missing a default reviewer and has nothing in the file to stop it from 'fixing' that.",
+      "fix": "Copy task 07's note verbatim into task 06's Reviewers section."
+    },
+    {
+      "severity": "minor",
+      "category": "frontmatter",
+      "task": "09",
+      "section": "frontmatter",
+      "issue": "Template annotation comments were left in place: `# planned -> in_progress -> done`, `# ID задач-зависимостей (строки: [\"01\", \"02\"])`, `# волна параллельного выполнения`, `# МАССИВ скиллов для загрузки`, `# имя агента-исполнителя (опционально; если не задано — генерируется по описанию задачи)`. Tasks 06, 07 and 08 stripped them. All values are correct and the YAML parses; this is cosmetic residue of the template copy, but it is the only file in the batch that still reads like the template.",
+      "fix": "Strip the template's own annotation comments, keeping the task-specific ones (the `verify` and `reviewers` comments carry real information and should stay)."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 4,
+    "issues_found": 9,
+    "critical": 1,
+    "major": 1,
+    "minor": 7
+  }
+}

@@ -177,18 +177,92 @@ changes do not automatically update `./bin/pgcenter`. A stale binary silently in
 visual check that follows. The rule: one manual verification session = one fresh build at the
 start.
 
-## printCmdline() — Mutual Exclusion
+### Driving the TUI on a remote test stand (agent-run verification)
 
-`printCmdline(g, msg)` calls `g.Update` followed by `v.Clear`. If it is called twice in the
-same view-switch handler the second call immediately overwrites the first render. When a
-handler needs to show either a warning or a normal message, these two cases must be mutually
-exclusive — use an `if/else` branch, not two sequential calls. Calling `printCmdline(warning)`
-and then `printCmdline(v.Msg)` in the same code path will always discard the warning before
-the user can read it.
+An agent can verify interactive TUI behaviour end-to-end — not only unit-test the render cores —
+by driving pgcenter inside tmux on a dedicated stand over ssh. The regimen below is carried over
+from the sibling book project (`../postgresql-destruction-recovery-guide-book`, "Операционные
+правила стенда"), where it is already proven for capturing pgcenter screens.
 
-When multiple independent availability probes can fail (e.g., IO + delay accounting in
-`switchViewToProcPidStat`), use a 4-branch `switch` covering all combinations, with a combined
-message for the case where both are unavailable — still exactly one `printCmdline` call per path.
+**Stand.** A dedicated VM reachable over ssh. The address and credentials are **not stored in this
+repository, and not worth recording anywhere else either** — stands are ephemeral, with a TTL
+measured in hours, so a saved address is stale by the next session. Ask the author at the start of
+every run, and never assume the previous run's state survived.
+
+**Take an inventory before planning the run — the stand is not a fixed image.** Observed so far:
+Ubuntu 24.04 with tmux preinstalled, and Debian 12 with no tmux, no Go, and a Postgres Pro build
+whose `shared_preload_libraries` lacks `pg_stat_statements` (so the statements screens are simply
+unavailable). Check for `tmux`, the PostgreSQL flavour and the loaded libraries first; installing
+tmux is fine with the passwordless sudo these stands carry, but a missing extension may mean a
+screen cannot be exercised at all — decide that before writing the plan, not mid-run.
+
+**Bring a second binary built from `master`.** Running the same scenario on both is what separates a
+regression introduced by the feature from behaviour that was always broken. In 015 this reclassified
+three of five findings as pre-existing; without it they would have been filed against the feature.
+
+**The binary under test must be shipped explicitly.** The stand carries a pgcenter built from
+`master`; a feature branch's behaviour is not there until you copy the freshly built
+`./bin/pgcenter` over and invoke it by an explicit path. Running the system-wide `pgcenter` and
+reporting the result is the remote-stand equivalent of testing a stale binary.
+
+**Deterministic terminal size is the point of using tmux.** `tmux new-session -d -s cap -x 190
+-y 52` fixes the geometry, so width-dependent behaviour becomes reproducible rather than a
+function of whatever window the operator had open. Narrow sizes (`-x 60`) are how the horizontal
+column window, the verbose height-guard fallback and any width-clamped indicator get exercised
+deliberately — these paths are otherwise nearly untestable by hand.
+
+**Keys go in with `send-keys`, screens come out with `capture-pane`.** Send a hotkey, allow at
+least one refresh interval to pass, then capture. Two capture modes, and picking the wrong one
+silently invalidates the check:
+
+- `tmux capture-pane -t cap -p` — plain text, escape sequences stripped. Use for layout, column
+  content, row counts, indicator text.
+- `tmux capture-pane -t cap -p -e` — **keeps** the escape sequences. This is the only way to
+  verify colour and attribute rendering (bold values in the header panels, the reverse-video sort
+  column, the frozen-column bold). Without `-e` a missing `\033[37;1m` is indistinguishable from a
+  present one, so a colour regression passes.
+
+Stripping ANSI from an `-e` capture for diffing: `sed 's/\x1b\[[0-9;]*m//g'`.
+
+**Leave the stand as you found it.** Server GUCs changed for an experiment are reset afterwards
+and the reset is verified with `SHOW`; the tmux session is killed at the end of the run.
+
+## The cmdline: one composer, transient messages, persistent state (015-feat-tui-papercuts)
+
+Everything written to the cmdline goes through **one composition point**. `printCmdline` keeps its
+historical signature and its 2-second clear timer; `printCmdlinePersist` is the same writer without
+the timer, for text that must survive until dismissed (the dialog prompt). Both delegate to a shared
+core that builds the line as *reserved state prefix* + *transient message* and clamps it to the
+terminal width in **runes**.
+
+- **Persistent state is a token, not a message.** `cmdlineToken` carries renderings ordered
+  longest-to-shortest; the composer degrades the rightmost token through its variants only when the
+  line does not fit, then drops tokens from the right. A token with exactly one variant never
+  shrinks — that is how a "must always be visible" indicator is expressed in data rather than in a
+  special case. Adding a second token requires no change to the composer.
+- **Read state only on the gocui goroutine.** The composer reads its state from a package-level
+  ambient `*config`, written once by a named setter from `RunMain` — deliberately not from `newApp`,
+  which unit tests call repeatedly and would leave a stale pointer behind. Dereference only inside
+  `g.Update` closures or key handlers. This is the package's only package-level mutable var; it
+  exists so the 44 existing call sites keep their signature.
+- **The clear timer renders, it does not erase.** It re-renders the prefix-only line inside its own
+  `g.Update` (removing an older race where a bare goroutine touched the view buffer) and is gated on
+  an atomic UI-generation counter **captured into a local before the goroutine is spawned** — read
+  inside, it would compare a value to itself and do nothing. `mainLoop` rebuilds the `Gui` without
+  closing it on every pager/editor return, so an ungated timer pins the abandoned one.
+- **Sanitise anything that came from the server.** Column names reach the indicator, and
+  `gocui.View.Clear()` resets the line buffer but *not* the escape-interpreter state — an
+  unterminated sequence on this low-frequency surface survives the whole session, unlike the stats
+  table, which repaints every tick amid correct sequences and self-heals.
+
+**Still true, and now the sharper hazard:** two writes in one code path still leave only the last
+one visible, because `g.Update` enqueues each from its own goroutine and the order is not
+guaranteed. Keep exactly one call per path — an `if/else`, or the 4-branch `switch` that
+`switchViewToProcPidStat` uses for its two independent probes. Two known paths violate this and
+predate the composer: `dialogFinish` writes an empty line before its result, so **no message shown
+after a dialog closes is ever visible** (the action still happens), and the verbose height-guard
+hint loses to `collecting...` on the same keypress. Both are registered tech debt — do not treat a
+"missing" cmdline message as a new bug before checking whether it is one of these.
 
 ## Adding a Hybrid View (SQL + procfs enrichment)
 

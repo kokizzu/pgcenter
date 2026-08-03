@@ -952,3 +952,82 @@ without touching five files.
 **Alternatives considered:** branching at 14 (rejected — matches fixtures, not reality); adding a PG 13
 cluster (rejected — disproportionate, PG 13 is past EOL); renaming the constants (rejected — rested on
 a convention that does not exist).
+
+---
+
+## [015-feat-tui-papercuts] One cmdline composer fed by an ambient config
+
+**Date:** 2026-08-02
+**Feature:** 015-feat-tui-papercuts
+**Status:** Accepted
+
+**Context:** A persistent filter indicator has to appear on every cmdline write, but the writers are
+reached from 19 functions across 11 files, four of which (`showPgConfig`, `editPgConfig`,
+`showPgLog`, `resetStat`) have no `config` in scope at all. There are 44 existing call sites.
+
+**Decision:** A package-level `cmdlineCfg *config` in `top/`, written exactly once by
+`setCmdlineConfig` called from `RunMain`, dereferenced only inside `g.Update` closures or key
+handlers. All existing call sites keep their signature.
+
+**Rationale:** Threading the config explicitly costs 44 call-site edits plus four helper signatures
+and their keybinding registrations — a large mechanical diff across files that three waves were
+editing concurrently, for a dependency that is genuinely process-global in a single-instance TUI.
+Setting it from `RunMain` rather than `newApp` matters: `newApp` runs in unit tests, and an ambient
+set there would leave one test's config visible to every test that follows. That is safe today only
+because nothing in `top/` calls `t.Parallel()` — an undocumented invariant not worth depending on.
+
+**Alternatives considered:** Explicit threading (rejected on diff size and cross-wave merge risk,
+not on principle). `sync.Once` (guards a second write that cannot happen). Note this is the first
+package-level mutable var in `top/`; `internal/version` and `internal/stat/procpidstat.go` have
+package vars, but they hold immutable data.
+
+---
+
+## [015-feat-tui-papercuts] Reserve the input field's room before composing the dialog prompt
+
+**Date:** 2026-08-02
+**Feature:** 015-feat-tui-papercuts
+**Status:** Accepted
+
+**Context:** The dialog input field was positioned from the raw prompt length, assuming an empty
+cmdline. With a persistent indicator that assumption breaks. It was already broken without one: the
+93-character state-mask prompt puts the field's left edge right of its right edge on an 80-column
+terminal, `gocui.SetView` rejects the coordinates, and the error propagates to `MainLoop`, which
+tears down and rebuilds the entire UI. Reproducible at startup on `master`.
+
+**Decision:** Compose the prompt against a width budget that already excludes the field's reserved
+minimum, so an overlong prompt is **truncated** (with an ellipsis spent from the same budget) rather
+than overlaid by the field. The x0 clamp remains as a backstop that provably never bites.
+
+**Rationale:** Clamping alone keeps the dialog on screen but slides the field over the prompt's
+tail, contradicting the alignment requirement. Truncating satisfies both at once. The prefix is
+rendered at the same width the writer uses, so the measured line and the drawn line are the same
+string by construction rather than by coincidence — the one place where two independently correct
+pieces could silently disagree.
+
+**Alternatives considered:** Clamp and accept the overlay (contradicts an approved criterion);
+shorten the prompt strings themselves (changes user-visible text unrelated to the feature).
+
+---
+
+## [015-feat-tui-papercuts] Probe the existing window function instead of recomputing the offset
+
+**Date:** 2026-08-02
+**Feature:** 015-feat-tui-papercuts
+**Status:** Accepted
+
+**Context:** Auto-scrolling to the sort column needs the smallest offset at which that column is
+visible. The admission rule lives in `visibleColumns`, whose marker-reservation arithmetic ADR
+[009] records as error-prone — it shipped a bug invisible to unit tests.
+
+**Decision:** Walk candidate offsets and ask `visibleColumns` whether the column is inside the
+returned window; take the first that admits it. Where no offset admits it at all — a terminal
+narrower than the frozen column — leave the offset untouched.
+
+**Rationale:** Any independent computation would be a second implementation of the same subtle rule.
+The function is pure and the column count is bounded by the widest screen. The research sketch
+returned the last index in the no-fit case, which would jerk the window to an arbitrary edge; the
+acceptance criterion overrode it.
+
+**Alternatives considered:** Direct backward-walk arithmetic (a second source of truth for the
+marker rule).
