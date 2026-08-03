@@ -1,3 +1,6 @@
 # Build artifacts
 /bin/
 .test_coverage.txt
+
+# QA artifacts: kept locally during feature work, not part of the repository
+logs/
